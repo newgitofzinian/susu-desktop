@@ -1,0 +1,8 @@
+{
+  "version": "1.3",
+  "desktop_boundary_placements": 1836,
+  "work_territory_placements": 432,
+  "native_work_territories": 16,
+  "checks": ["4x4 coverage and top-left row-major numbering", "entire pet window and bubble constrained", "walk and run targets confined", "drag clamp at both extreme corners", "15/30/45/60 minute intervals", "pause and restart without catch-up bursts", "native reminder bubble render", "22 unchanged animation assets and alpha hit tests"],
+  "limitations": ["physical multi-display configurations not verified", "timing tests use simulated timestamps, not hour-long real-time observation"]
+}

@@ -1,0 +1,22 @@
+{
+  "stretch": {
+    "frames": 6,
+    "canvas": [
+      192,
+      208
+    ],
+    "shared_scale": 0.5650793650793651,
+    "ground_y": 200,
+    "distinct_frames": 6
+  },
+  "play": {
+    "frames": 6,
+    "canvas": [
+      192,
+      208
+    ],
+    "shared_scale": 0.5235294117647059,
+    "ground_y": 200,
+    "distinct_frames": 6
+  }
+}

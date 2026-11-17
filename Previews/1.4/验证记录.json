@@ -1,0 +1,18 @@
+{
+  "version": "1.4",
+  "checks": [
+    "1836 original boundary placements",
+    "432 work territory placements",
+    "persistent reminder card rendering",
+    "native done and snooze button clicks",
+    "snooze sets 300-second deadline",
+    "acknowledgement restarts selected interval",
+    "preview available outside work mode",
+    "inactive state clears snooze",
+    "22 original animation frames and alpha hit tests"
+  ],
+  "limitations": [
+    "timing verified with simulated timestamps, not a real-time 30-minute wait",
+    "physical multi-display configuration not verified"
+  ]
+}

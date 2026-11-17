@@ -1,0 +1,26 @@
+{
+  "version": "1.5",
+  "boundary_placements": 1836,
+  "work_territory_placements": 432,
+  "horizontal_route_samples": 1512,
+  "total_animation_frames": 34,
+  "new_frames": {
+    "stretch": 6,
+    "play": 6
+  },
+  "native_checks": [
+    "walking target and window preserve starting y",
+    "stretch/play render in free and work modes",
+    "stationary action origin stays unchanged",
+    "actions return to idle",
+    "common stop operation interrupts actions",
+    "water card buttons and five-minute snooze",
+    "16 territory window bounds",
+    "original alpha hit tests and partial-screen bounds"
+  ],
+  "artwork": "built-in image_gen with existing idle frame as identity reference; same per-sequence scale and ground registration",
+  "limits": [
+    "real multi-monitor hardware not tested",
+    "visual motion quality may need further tuning based on user feedback"
+  ]
+}

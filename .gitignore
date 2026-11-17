@@ -18,3 +18,5 @@ Art/**/walk-qa/
 Art/**/tail-extracted/frames-manifest.json
 Previews/edge-cleanup/
 Assets/AppIcon.iconset/
+# Local task-page capture includes this machine's absolute installation path.
+Previews/2.0/room-4.png
