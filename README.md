@@ -38,7 +38,7 @@
 需要 macOS、Swift 和 Apple Command Line Tools；不依赖第三方 Swift 包。
 
 ```sh
-git clone <本仓库地址>
+git clone https://github.com/newgitofzinian/susu-desktop.git
 cd susu-desktop
 zsh build.sh
 open 溯溯.app
