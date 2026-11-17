@@ -1,0 +1,20 @@
+.DS_Store
+._*
+.build/
+*.app/
+*.zip
+__pycache__/
+*.pyc
+.venv/
+.env
+.env.*
+.codex/
+# Intermediate extraction data and rejected art; selected source art is retained.
+Art/**/decoded/
+Art/**/rejected-*/
+Art/**/original-frames/
+Art/**/edge-cleanup/
+Art/**/walk-qa/
+Art/**/tail-extracted/frames-manifest.json
+Previews/edge-cleanup/
+Assets/AppIcon.iconset/

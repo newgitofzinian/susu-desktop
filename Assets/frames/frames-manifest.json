@@ -1,0 +1,17 @@
+{
+  "version": "1.2",
+  "states": {
+    "idle": 6,
+    "walking-right": 8,
+    "running-right": 8
+  },
+  "visibility_core": {
+    "x": 0.19791666666666666,
+    "y": 0.47596153846153844,
+    "width": 0.14583333333333334,
+    "height": 0.1346153846153846
+  },
+  "common_opaque_square_pixels": 25,
+  "transparency_and_magenta_checks": "passed",
+  "idle": "fixed body layer plus independently generated tail poses; exact body RGBA equality verified"
+}

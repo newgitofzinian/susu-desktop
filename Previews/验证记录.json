@@ -1,0 +1,21 @@
+{
+  "version": "1.0",
+  "architecture": "arm64",
+  "minimum_macos": "13.0",
+  "build": "passed",
+  "code_signature": "ad-hoc, verified",
+  "native_launch_smoke_test": "passed",
+  "idle_frames": 6,
+  "walking_frames": 8,
+  "rendered_states": [
+    "idle",
+    "blink",
+    "walk-right",
+    "walk-left"
+  ],
+  "opaque_hit_test": "passed",
+  "transparent_hit_test": "passed",
+  "full_manual_gui_test": "not completed; computer-use connection timed out",
+  "fal_paid_jobs_submitted": 0,
+  "recharge_performed": false
+}

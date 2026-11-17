@@ -1,0 +1,31 @@
+{
+  "version": "1.2",
+  "body_pixels_locked": 16623,
+  "changed_body_pixels_per_frame": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "changed_tail_pixels_per_frame": [
+    0,
+    3856,
+    3987,
+    4100,
+    4033,
+    3861
+  ],
+  "body_stability": "pass: identical RGBA pixels in every idle frame",
+  "visibility_core": {
+    "x": 0.19791666666666666,
+    "y": 0.47596153846153844,
+    "width": 0.14583333333333334,
+    "height": 0.1346153846153846
+  },
+  "native_launch_and_drawing": "passed",
+  "native_four_corner_visibility": "passed",
+  "mouse_hit_and_transparent_click_through": "passed",
+  "greeting_whole_body_bounce": "removed"
+}

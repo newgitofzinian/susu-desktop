@@ -1,0 +1,26 @@
+{
+  "version": "1.1",
+  "build": "passed",
+  "code_signature": "ad-hoc, verified",
+  "native_launch_smoke_test": "passed",
+  "frame_counts": {
+    "idle": 6,
+    "walking": 8,
+    "running": 8
+  },
+  "rendered_states": [
+    "idle",
+    "tail-low",
+    "walk-right",
+    "walk-left",
+    "run-right",
+    "run-left"
+  ],
+  "boundary_regression_placements": 1836,
+  "native_four_corner_partial_screen_exit": "passed, opaque body patch retained",
+  "opaque_mouse_hit_test": "passed",
+  "transparent_click_through": "passed",
+  "asset_transparency_and_chroma": "passed",
+  "actual_multi_display_hardware_test": "not performed",
+  "fal_paid_jobs_submitted": 0
+}
