@@ -13,6 +13,8 @@ final class SpriteFrames {
     let run: [NSImage]
     let stretch: [NSImage]
     let play: [NSImage]
+    let closeup: [NSImage]
+    let houseArtwork: HouseArtwork
     let idlePixels: [NSBitmapImageRep]
     let walkPixels: [NSBitmapImageRep]
     let runPixels: [NSBitmapImageRep]
@@ -41,6 +43,8 @@ final class SpriteFrames {
         (run, runPixels) = try load("running-right", count: 8)
         (stretch, stretchPixels) = try load("stretch", count: 6)
         (play, playPixels) = try load("play", count: 6)
+        (closeup, _) = try load("closeup", count: 3)
+        houseArtwork=try HouseArtwork(resources:resources)
         let data = try Data(contentsOf: resources.appendingPathComponent("frames/visibility.json"))
         guard let values = try JSONSerialization.jsonObject(with: data) as? [String: Double],
               let x = values["x"], let y = values["y"], let w = values["width"], let h = values["height"], w > 0, h > 0 else {
@@ -94,6 +98,11 @@ final class PetView: NSView {
     weak var owner: PetController?
     var frames: SpriteFrames!
     var taskBadge = ""
+    var letterWaiting = false
+    var away = false
+    var home = false
+    var scarfState = StudioState()
+    var zoomHidden=false
     var frameIndex = 0
     var walking = false
     var running = false
@@ -131,7 +140,16 @@ final class PetView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        guard frames != nil else { return }
+        guard frames != nil,!zoomHidden else { return }
+        if away && home {
+            if letterWaiting { ("✉️" as NSString).draw(at:NSPoint(x:8,y:70),withAttributes:[.font:NSFont.systemFont(ofSize:28)]) }
+            return
+        }
+        if away {
+            ((home ? "🏡 小窝中" : "🌲 探险中") as NSString).draw(at:NSPoint(x:8,y:35),withAttributes:[.font:NSFont.systemFont(ofSize:min(18,max(10,bounds.width/7))),.foregroundColor:NSColor.systemBrown])
+            if letterWaiting { ("✉️" as NSString).draw(at:NSPoint(x:8,y:70),withAttributes:[.font:NSFont.systemFont(ofSize:28)]) }
+            return
+        }
         let mix = CGFloat(min(1, transitionAge / 0.16))
         func drawSprite(_ image: NSImage, mirrored: Bool, opacity: CGFloat) {
         NSGraphicsContext.saveGraphicsState()
@@ -145,6 +163,12 @@ final class PetView: NSView {
         }
         if let previousImage, mix < 1 { drawSprite(previousImage, mirrored: previousMirrored, opacity: 1-mix) }
         drawSprite(currentImage, mirrored: facesLeft && walking, opacity: mix)
+        if action == nil && !running, let scarf=ScarfRenderer.overlay(state:scarfState,walking:walking,frame:frameIndex) {
+            drawSprite(scarf,mirrored:facesLeft && walking,opacity:mix)
+        }
+        if letterWaiting {
+            ("✉️" as NSString).draw(at:NSPoint(x:bounds.width-42,y:20),withAttributes:[.font:NSFont.systemFont(ofSize:28)])
+        }
         if !taskBadge.isEmpty {
             (taskBadge as NSString).draw(at:NSPoint(x:6,y:20),withAttributes:[.font:NSFont.systemFont(ofSize:28)])
         }
@@ -163,6 +187,11 @@ final class PetView: NSView {
 
     // Transparent padding passes clicks through to the user's other windows.
     func containsPet(_ point: NSPoint) -> Bool {
+        if zoomHidden{return false}
+        if away && home {return letterWaiting && NSRect(x:4,y:60,width:42,height:48).contains(point)}
+        if away { return NSRect(x:4,y:25,width:min(140,bounds.width-8),height:letterWaiting ? 85 : 45).contains(point) }
+        if letterWaiting && NSRect(x:bounds.width-42,y:20,width:36,height:36).contains(point) { return true }
+        if !taskBadge.isEmpty && NSRect(x:6,y:20,width:36,height:36).contains(point) { return true }
         let rect = actorRect.offsetBy(dx: 0, dy: bounce)
         guard rect.contains(point) else { return false }
         let bitmap = currentPixels
@@ -188,7 +217,9 @@ final class PetView: NSView {
     override func mouseUp(with event: NSEvent) {
         dragging = false
         if !moved {
-            if taskBadge.isEmpty { owner?.greet() } else { owner?.showTaskRoom() }
+            if letterWaiting { owner?.showLetters() }
+            else if away { if home {owner?.showStudio()} else {owner?.showExpedition()} }
+            else if taskBadge.isEmpty { owner?.greet() } else { owner?.showTaskRoom() }
         }
         owner?.savePosition()
     }
@@ -216,11 +247,16 @@ final class PetController: NSObject, NSApplicationDelegate {
     private var logicalPosition: NSPoint?
     private var store: CompanionStore!
     private var room: CompanionRoom!
+    private var activities: ActivitiesRoom!
+    private var studio: StudioRoom!
+    private var chat: ChatRoom!
+    private var desktop:DesktopActions!
+    private var cueActions: [PetAction] = []
     private var waterPreview = false
     private var lastTaskPoll: TimeInterval = 0
     private var taskRunning = false
     private var taskState = ""
-    private var inRoom = false
+    private var inRoom: Bool { room?.window.isVisible == true || activities?.window.isVisible == true || studio?.window.isVisible == true || chat?.window?.isVisible == true || desktop?.isVisible == true }
     private var runningMode = false
     private var speed: CGFloat = 0
     private var nextWalk: TimeInterval = 0
@@ -266,7 +302,37 @@ final class PetController: NSObject, NSApplicationDelegate {
         pet.registerForDraggedTypes([foodPasteboard])
         room = CompanionRoom(store:store,frames:frames)
         room.animate = { [weak self] in self?.startAction($0) }
-        room.onInteraction = { [weak self] active in self?.inRoom=active;self?.stopWalking() }
+        room.onInteraction = { [weak self] _ in self?.stopWalking() }
+        activities = ActivitiesRoom(store:store,frames:frames)
+        activities.playCue = { [weak self] in self?.performCue($0) ?? false }
+        activities.onVisibility = { [weak self] in self?.stopWalking() }
+        activities.onChange = { [weak self] in self?.syncActivities() }
+        studio = StudioRoom(store:store,frames:frames)
+        studio.onChange = { [weak self] in self?.syncActivities() }
+        studio.onNestPresence = { [weak self] _ in self?.stopWalking();self?.syncActivities() }
+        studio.getNestArea = { [weak self] in
+            self?.workArea ?? self?.panel.screen?.visibleFrame ?? NSScreen.main!.visibleFrame
+        }
+        chat = ChatRoom(getState:{ [weak self] in self?.store.save.studio.chat ?? ChatState() },saveState:{ [weak self] state in
+            guard let self else{return}
+            var studioState=self.store.save.studio
+            studioState.chat=state
+            try self.store.saveStudio(studioState)
+        })
+        desktop=DesktopActions(store:store,frames:frames,room:room,activities:activities,anchor:{[weak self] in self?.studio.desktopAnchor ?? self?.panel.frame ?? .zero})
+        desktop.animate={ [weak self] action in self?.studio.releaseFox();self?.startAction(action) }
+        desktop.invokeCue={ [weak self] actions in self?.studio.releaseFox();return self?.performCue(actions) ?? false }
+        desktop.onChange={ [weak self] in self?.syncActivities() }
+        desktop.onPresent={ [weak self] in self?.stopWalking() }
+        desktop.onDismiss={ [weak self] in self?.pet.zoomHidden=false;self?.pet.needsDisplay=true;self?.studio.stopCloseup() }
+        studio.onReturnToDesktop={ [weak self] rect in
+            guard let self else{return}
+            self.move(to:NSPoint(x:rect.midX-self.panel.frame.width/2,y:rect.minY))
+        }
+        studio.desktopMenu={ [weak self] in self?.makeMenu() ?? NSMenu() }
+        studio.canStartHouse={ [weak self] in self?.quiet == false && self?.suspended == false }
+        chat.desktopAnchor={ [weak self] in self?.studio.desktopAnchor ?? self?.panel.frame ?? .zero }
+        syncActivities()
         pet.setAccessibilityLabel("溯溯桌面宠物。点击回应，拖动移动，右键打开菜单。")
         pet.autoresizingMask = [.width, .height]; panel.contentView = pet
         let visible = NSScreen.main?.visibleFrame ?? NSRect(x: 0,y: 0,width: 1200,height: 800)
@@ -285,6 +351,12 @@ final class PetController: NSObject, NSApplicationDelegate {
         workspace.addObserver(self, selector: #selector(sleeping), name: NSWorkspace.screensDidSleepNotification, object: nil)
         workspace.addObserver(self, selector: #selector(waking), name: NSWorkspace.screensDidWakeNotification, object: nil)
         greet(text: "你好，我是溯溯。")
+        if !CommandLine.arguments.contains("--smoke-test"),UserDefaults.standard.object(forKey:"houseShown")==nil || UserDefaults.standard.bool(forKey:"houseShown") {
+            DispatchQueue.main.asyncAfter(deadline:.now()+0.6){[weak self] in self?.studio.showHouse()}
+        }
+        if CommandLine.arguments.contains("--show-home") && !CommandLine.arguments.contains("--smoke-test") {
+            DispatchQueue.main.asyncAfter(deadline:.now()+1){[weak self] in self?.studio.restOutside()}
+        }
         nextWalk = ProcessInfo.processInfo.systemUptime + 8
         timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in self?.tick() }
         RunLoop.main.add(timer!, forMode: .common)
@@ -345,14 +417,21 @@ final class PetController: NSObject, NSApplicationDelegate {
     private func tick() {
         let now = ProcessInfo.processInfo.systemUptime
         let dt = min(0.1, max(0, now-lastTick)); lastTick = now
-        if now-lastTaskPoll>1 { lastTaskPoll=now;pollTasks() }
+        if now-lastTaskPoll>1 { lastTaskPoll=now;pollTasks();syncActivities() }
         if !waterPreview && water.poll(at: now, active: workMode && !quiet && !suspended && panel.isVisible && !reminderVisible) {
             remindWater()
         }
         guard !suspended, panel.isVisible else { return }
         if let current = action {
             actionClock += dt
-            if actionClock >= current.duration { stopWalking() }
+            if actionClock >= current.duration {
+                let queued = cueActions
+                stopWalking()
+                if let first = queued.first {
+                    startAction(first)
+                    cueActions = Array(queued.dropFirst())
+                }
+            }
         }
         if let destination = target, !pet.dragging {
             let logical = logicalPosition ?? panel.frame.origin
@@ -369,7 +448,7 @@ final class PetController: NSObject, NSApplicationDelegate {
                 if let after=logicalPosition,step>0.05 && hypot(after.x-before.x,after.y-before.y)<0.001 { stopWalking() }
                 walkClock += dt * Double(max(0.20,speed/nominal))
             }
-        } else if autoWalk && !quiet && !reminderVisible && !pet.dragging && !inRoom && !taskRunning && action == nil && now > nextWalk {
+        } else if autoWalk && !quiet && !reminderVisible && !pet.dragging && !pet.away && !inRoom && !taskRunning && action == nil && now > nextWalk {
             switch Int.random(in:0..<6) {
             case 0: startAction(.stretch)
             case 1: startAction(.play)
@@ -396,11 +475,11 @@ final class PetController: NSObject, NSApplicationDelegate {
         panel.ignoresMouseEvents = !pet.dragging && !pet.containsPet(local)
     }
 
-    func stopWalking() { logicalPosition = panel?.frame.origin; target = nil; action = nil; actionClock = 0; speed = 0; nextWalk = ProcessInfo.processInfo.systemUptime + Double.random(in: 8...18) }
+    func stopWalking() { cueActions = []; logicalPosition = panel?.frame.origin; target = nil; action = nil; actionClock = 0; speed = 0; nextWalk = ProcessInfo.processInfo.systemUptime + Double.random(in: 8...18) }
     @objc func stretchOnce() { startAction(.stretch) }
     @objc func playOnce() { startAction(.play) }
     private func startAction(_ next: PetAction) {
-        guard !quiet, !reminderVisible, !pet.dragging else { return }
+        guard !quiet, !reminderVisible, !pet.away, !pet.dragging else { return }
         stopWalking()
         // Keep every changing pose visible; free roaming still allows partial
         // off-screen positions again after the action returns to idle.
@@ -414,8 +493,8 @@ final class PetController: NSObject, NSApplicationDelegate {
     }
     @objc func runOnce() { startJourney(running:true) }
     private func startJourney(running: Bool) {
-        guard !quiet, !reminderVisible, !pet.dragging, let screen = NSScreen.screens.randomElement() else { return }
-        action = nil; actionClock = 0
+        guard !quiet, !reminderVisible, !pet.away, !pet.dragging, let screen = NSScreen.screens.randomElement() else { return }
+        cueActions = [];action = nil; actionClock = 0
         let area = screen.visibleFrame
         let width = panel.frame.width
         // Work mode constrains every destination as well as each movement step.
@@ -465,7 +544,7 @@ final class PetController: NSObject, NSApplicationDelegate {
         reminder.setFrameOrigin(NSPoint(x:area.midX-reminder.frame.width/2,y:area.maxY-reminder.frame.height-36))
     }
     private func showWaterCard() {
-        stopWalking(); dismissGrid();room?.interrupt()
+        stopWalking(); dismissGrid();desktop?.interrupt();room?.interrupt()
         if waterPanel == nil {
             let card = PetPanel(contentRect:NSRect(x:0,y:0,width:440,height:264),styleMask:[.borderless,.nonactivatingPanel],backing:.buffered,defer:false)
             card.title = "溯溯 · 该喝水啦"; card.isOpaque = false; card.backgroundColor = .clear
@@ -552,11 +631,13 @@ final class PetController: NSObject, NSApplicationDelegate {
     @objc func toggleQuiet() {
         dismissWaterCard()
         quiet.toggle(); UserDefaults.standard.set(quiet, forKey: "quiet")
+        if quiet {desktop?.interrupt();chat?.hideDesktop()};studio?.pauseHouse(quiet)
         water.restart(at:ProcessInfo.processInfo.systemUptime)
         stopWalking(); pet.frameIndex = 0; pet.greetingAge = 100; pet.needsDisplay = true; refreshMenu()
     }
     @objc func toggleVisible() {
-        water.restart(at:ProcessInfo.processInfo.systemUptime); dismissGrid(); dismissWaterCard()
+        water.restart(at:ProcessInfo.processInfo.systemUptime); dismissGrid(); dismissWaterCard();desktop?.interrupt();chat?.hideDesktop()
+        studio.suspendHouse(panel.isVisible)
         if panel.isVisible { panel.orderOut(nil); stopWalking() } else { panel.orderFrontRegardless(); greet() }
         refreshMenu()
     }
@@ -577,23 +658,78 @@ final class PetController: NSObject, NSApplicationDelegate {
         panel.orderFrontRegardless(); savePosition(); refreshMenu()
     }
     @objc func showHelp() {
-        let alert = NSAlert(); alert.messageText = "溯溯 · 桌面版 2.0"
+        let alert = NSAlert(); alert.messageText = "溯溯 · 桌面版 2.3"
         alert.informativeText = "点击：溯溯回应你\n拖动：在桌面自由摆放，可部分移出屏幕\n右键或菜单栏爪印：左右散步、伸个懒腰、玩耍一下、跑一圈、自由活动、大小、安静模式与退出\n\n自由活动默认开启，以左右慢走为主，偶尔伸懒腰、玩耍或跑步。始终保留一小块身体在屏幕内；选择‘回到主屏幕’可以找回。安静模式会停止摇尾巴与其他动作。\n\n工作模式：屏幕分成 4×4 共 16 格，可选择地盘与显示器；宠物会自动缩小并完整留在该格内。每 30 分钟提醒喝水，可改为 15、45、60 分钟。提醒卡片持续显示，点击‘喝过了’后重新计时，或选‘5 分钟后提醒’。菜单可立即体验。隐藏、安静与屏幕休眠时暂停提醒，恢复后重新计时。\n\n本机运行，无需联网或账号。"
         alert.addButton(withTitle: "知道啦"); alert.runModal()
     }
     @objc func screenChanged() { dismissGrid(); applyWorkArea(); positionWaterCard(); refreshMenu() }
     @objc func sleeping() {
         suspended = true; stopWalking(); dismissGrid(); dismissWaterCard(); refreshMenu()
+        studio?.pauseHouse(true)
         _ = water.poll(at:ProcessInfo.processInfo.systemUptime,active:false)
     }
     @objc func waking() {
         suspended = false; lastTick = ProcessInfo.processInfo.systemUptime
-        water.restart(at:lastTick)
+        water.restart(at:lastTick);studio?.pauseHouse(quiet)
     }
-    @objc func showRoom() { room.show() }
-    @objc func showFoodRoom() { room.show(tab:1) }
-    @objc func showTaskRoom() { room.show(tab:4) }
-    func receiveFood(_ index:Int) { room.feed(index);greet(text:"收到点心啦！") }
+    private func performCue(_ names: [String]) -> Bool {
+        let sequence = names.compactMap(PetAction.init(rawValue:))
+        guard sequence.count == 2, !quiet, !suspended, panel.isVisible,
+              !reminderVisible, !pet.dragging, !pet.away else { return false }
+        stopWalking()
+        startAction(sequence[0])
+        cueActions = Array(sequence.dropFirst())
+        return true
+    }
+    private func syncActivities() {
+        guard store != nil, pet != nil else { return }
+        do {
+            let changed = try store.settleActivities()
+            if store.save.activities.expedition != nil && studio?.foxInNest == true {studio.leaveNest()}
+            let away = store.save.activities.expedition != nil || studio?.foxInNest == true
+            if away != pet.away { stopWalking() }
+            pet.away = away
+            pet.home = studio?.foxInNest == true
+            pet.scarfState = store.save.studio
+            studio?.refreshState()
+            studio?.pauseHouse(quiet || suspended)
+            studio?.updateNestArea()
+            pet.letterWaiting = !store.unreadLetters.isEmpty
+            pet.needsDisplay = true
+            if changed { activities?.refreshDelivery() }
+        } catch {
+            status?.button?.toolTip = "新玩法保存未完成，稍后重试。"
+        }
+    }
+    @objc func showStudio() {stopWalking();studio.showHouse()}
+    @objc func showChat() {stopWalking();chat.show()}
+    @objc func showActivities() {studio.releaseFox();desktop.cues()}
+    @objc func showExpedition() {desktop.expedition()}
+    @objc func showLetters() {desktop.letters()}
+    @objc func showRoom() {studio.releaseFox();desktop.game()}
+    @objc func showFoodRoom() {studio.releaseFox();desktop.food()}
+    @objc func showTaskRoom() {desktop.task(room.taskDetail)}
+    @objc func showCards(){desktop.cards()}
+    @objc func showJournal(){desktop.journal()}
+    @objc func showArchive(){desktop.archive()}
+    @objc func compareFood(){desktop.compareFood()}
+    @objc func restAtHouse(){studio.restOutside()}
+    @objc func storeMat(){studio.putMatInside()}
+    @objc func leaveHouse(){studio.releaseFox()}
+    @objc func hideHouse(){studio.leaveNest()}
+    @objc func houseSize(_ item:NSMenuItem){studio.resizeHouse(CGFloat(item.tag))}
+    @objc func showCloseup(){studio.releaseFox();stopWalking();desktop.present(studio.desktopCloseup(feedback:{[weak self] in self?.greet(text:$0)}),glass:false);pet.zoomHidden=true;pet.needsDisplay=true}
+    @objc func showPhoto(){desktop.present(studio.desktopPhotoView())}
+    @objc func changeScarf(_ item:NSMenuItem){let ids=["none","teal","amber","rose"]+store.save.studio.packs.map{$0.id.uuidString};guard ids.indices.contains(item.tag) else{return};studio.selectScarf(ids[item.tag]);refreshMenu()}
+    @objc func changeLook(_ item:NSMenuItem){studio.useLook(item.tag);refreshMenu()}
+    @objc func deleteLook(_ item:NSMenuItem){studio.deleteDesktopLook(item.tag);refreshMenu()}
+    @objc func deleteScarf(_ item:NSMenuItem){studio.deleteDesktopPack(item.tag);refreshMenu()}
+    @objc func toggleCloseupSound(){studio.toggleCloseupSound();refreshMenu()}
+    @objc func dismissDesktopProps(){desktop.interrupt();chat.hideDesktop()}
+    @objc func saveLook(){desktop.askName("给今天的造型起个名字"){[weak self] in self?.studio.saveDesktopLook(name:$0);self?.refreshMenu()}}
+    @objc func importScarf(){studio.importDesktopScarf();refreshMenu()}
+    @objc func exportScarf(){studio.exportDesktopTemplate()}
+    func receiveFood(_ index:Int) {room.feed(index);greet(text:"收到点心啦！")}
     private func pollTasks() {
         let events=store.taskEvents().sorted { $0.date < $1.date }
         guard var event=events.last else { return }
@@ -632,9 +768,47 @@ final class PetController: NSObject, NSApplicationDelegate {
         }
         let name = NSMenuItem(title: "溯溯 · 陪你慢慢来", action: nil, keyEquivalent: ""); name.isEnabled = false; menu.addItem(name)
         menu.addItem(.separator())
-        item("林间小屋 · 藏松果 / 手帐 / 存档", #selector(showRoom))
-        item("喂点心与口味", #selector(showFoodRoom))
-        item("任务报信", #selector(showTaskRoom))
+        let house=NSMenuItem(title:"小房子",action:nil,keyEquivalent:"")
+        let houseMenu=NSMenu()
+        for (title,selector) in [("摆出小房子",#selector(showStudio)),("拿出垫子休息",#selector(restAtHouse)),("收垫子回屋",#selector(storeMat)),("出来走走",#selector(leaveHouse)),("收起小房子",#selector(hideHouse))] {
+            let entry=NSMenuItem(title:title,action:selector,keyEquivalent:"");entry.target=self;houseMenu.addItem(entry)
+        }
+        for width in [360,520,640] {let entry=NSMenuItem(title:"房子大小 \(width)",action:#selector(houseSize(_:)),keyEquivalent:"");entry.target=self;entry.tag=width;houseMenu.addItem(entry)}
+        house.submenu=houseMenu;menu.addItem(house)
+        item("喂点心",#selector(showFoodRoom))
+        item("两盘选口味",#selector(compareFood))
+        item("藏松果",#selector(showRoom))
+        item("听暗号 / 教暗号",#selector(showActivities))
+        item("去探险",#selector(showExpedition))
+        item("抽认卡",#selector(showCards))
+        item("信箱 / 留一封信",#selector(showLetters))
+        item("和溯溯聊天",#selector(showChat))
+        item("近看互动",#selector(showCloseup))
+        item("近看互动静音",#selector(toggleCloseupSound),checked:studio.closeupMuted)
+        item("合影明信片",#selector(showPhoto))
+        let clothes=NSMenuItem(title:"换围巾",action:nil,keyEquivalent:"")
+        let clothesMenu=NSMenu()
+        let ids=["none","teal","amber","rose"]+store.save.studio.packs.map{$0.id.uuidString}
+        for (index,name) in (["不戴围巾","湖绿","琥珀","莓红"]+store.save.studio.packs.map(\.name)).enumerated() {
+            let entry=NSMenuItem(title:name,action:#selector(changeScarf(_:)),keyEquivalent:"");entry.target=self;entry.tag=index;entry.state=store.save.studio.scarf==ids[index] ? .on : .off;clothesMenu.addItem(entry)
+        }
+        for (index,look) in store.save.studio.looks.enumerated() {let entry=NSMenuItem(title:"造型 · \(look.name)",action:#selector(changeLook(_:)),keyEquivalent:"");entry.target=self;entry.tag=index;clothesMenu.addItem(entry)}
+        for (title,selector) in [("保存当前造型",#selector(saveLook)),("导入配饰…",#selector(importScarf)),("导出配饰模板…",#selector(exportScarf))] {let entry=NSMenuItem(title:title,action:selector,keyEquivalent:"");entry.target=self;clothesMenu.addItem(entry)}
+        if !store.save.studio.looks.isEmpty {
+            let entry=NSMenuItem(title:"删除造型",action:nil,keyEquivalent:""),choices=NSMenu()
+            for (index,look) in store.save.studio.looks.enumerated(){let choice=NSMenuItem(title:look.name,action:#selector(deleteLook(_:)),keyEquivalent:"");choice.tag=index;choice.target=self;choices.addItem(choice)}
+            entry.submenu=choices;clothesMenu.addItem(entry)
+        }
+        if !store.save.studio.packs.isEmpty {
+            let entry=NSMenuItem(title:"删除导入的配饰",action:nil,keyEquivalent:""),choices=NSMenu()
+            for (index,pack) in store.save.studio.packs.enumerated(){let choice=NSMenuItem(title:pack.name,action:#selector(deleteScarf(_:)),keyEquivalent:"");choice.tag=index;choice.target=self;choices.addItem(choice)}
+            entry.submenu=choices;clothesMenu.addItem(entry)
+        }
+        clothes.submenu=clothesMenu;menu.addItem(clothes)
+        item("手帐",#selector(showJournal))
+        item("存档备份 / 迁移",#selector(showArchive))
+        item("任务报信",#selector(showTaskRoom))
+        item("收起当前道具 / 气泡",#selector(dismissDesktopProps))
         item("打个招呼", #selector(sayHello))
         item("喝水提醒（立即体验）", #selector(previewWater))
         item("左右散步", #selector(walkOnce))
@@ -822,7 +996,7 @@ final class PetController: NSObject, NSApplicationDelegate {
             territory = min(15,max(0,UserDefaults.standard.object(forKey:"workTerritory") == nil ? 15 : UserDefaults.standard.integer(forKey:"workTerritory")))
             workMode = false; applyWorkArea(); move(to:original)
             print("PASS: 16 native work territories confine dragging, walking, running and the full pet window; water reminder rendered.")
-            print("PASS: 34 frames loaded; tail poses, walk and run in both directions rendered; opaque input and click-through checked; native window moved partially off-screen at all four corners while keeping an opaque body patch visible.")
+            print("PASS: 37 frames loaded; tail poses, walk and run in both directions rendered; opaque input and click-through checked; native window moved partially off-screen at all four corners while keeping an opaque body patch visible.")
             try room.runChecks(at:directory)
             let quietBeforeMovement=quiet;quiet=false
             for size:CGFloat in [160,208,272] {
@@ -852,6 +1026,28 @@ final class PetController: NSObject, NSApplicationDelegate {
             }
             print("PASS: CLI to app task badge/journal integration, result dedup and hidden grid preview.")
             print("PASS: 2.0 six room pages, game results, preview isolation and actual left/right 100-point journeys at all three sizes.")
+            try activities.runChecks(at:directory)
+            let previousQuiet=quiet;quiet=false;stopWalking()
+            precondition(performCue(["stretch","play"]))
+            precondition(action == .stretch && cueActions == [.play])
+            actionClock=PetAction.stretch.duration;tick()
+            precondition(action == .play && cueActions.isEmpty)
+            actionClock=PetAction.play.duration;tick()
+            precondition(action == nil)
+            precondition(performCue(["play","stretch"]))
+            stopWalking();precondition(cueActions.isEmpty && action == nil)
+            quiet=true;precondition(!performCue(["stretch","play"]))
+            quiet=previousQuiet
+            pet.letterWaiting=true
+            precondition(pet.containsPet(NSPoint(x:pet.bounds.width-25,y:35)),"The envelope badge must be clickable")
+            pet.letterWaiting=false
+            print("PASS: 2.1 four activity pages; ordered cue playback, completion, interrupt and quiet-state guard.")
+            quiet=false
+            try studio.runChecks(at:directory)
+            try chat.runChecks(at:directory)
+            try desktop.runChecks(at:directory)
+            print("PASS: 2.2 studio pages, scarf template import/validation, postcard export and closeup sequence.")
+            print("PASS: 2.3 borderless desktop house; taking out, resting, packing and staying indoors; interrupted outing sequences; transparent input and desktop props.")
             print("Previews: \(directory.path)")
         } catch { fputs("Smoke test failed: \(error)\n", stderr); exit(1) }
         NSApp.terminate(nil)

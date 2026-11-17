@@ -1,0 +1,28 @@
+{
+  "version": "2.2",
+  "requirements": [
+    "F06",
+    "F08",
+    "F09",
+    "F12",
+    "F14"
+  ],
+  "checks": [
+    "three native furniture drag events and persisted positions",
+    "two cushion recall targets and closing nest",
+    "14-frame scarf template import; incomplete and escaped-path rejection",
+    "postcard PNG 1200x720",
+    "ear-side reaction poses and tail sequence",
+    "chat remember/delete/new-conversation UI",
+    "mock provider two-turn context and memory removal",
+    "mock HTTP failure and oversized response",
+    "2.0/2.1 migration, backups and complete studio save import/export",
+    "37 runtime sprite images and existing desktop feature regression"
+  ],
+  "limits": [
+    "live model provider and Keychain credentials not configured or tested",
+    "real multi-monitor hardware and long-term use untested",
+    "scarf slot currently supports idle and horizontal walking",
+    "optional chirp is locally synthesized"
+  ]
+}

@@ -50,12 +50,15 @@ struct PineconeGame {
 final class ForestGameView:NSView {
     var game = PineconeGame()
     var pose:NSImage?
+    var desktopMode=false
     var foxIndex=1
     var choose:((Int)->Void)?
     override func draw(_ dirtyRect:NSRect) {
-        NSColor(calibratedRed:0.93,green:0.96,blue:0.91,alpha:1).setFill()
-        NSBezierPath(roundedRect:bounds,xRadius:20,yRadius:20).fill()
-        pose?.draw(in:NSRect(x:CGFloat(foxIndex)*160+35,y:88,width:140,height:152))
+        if !desktopMode {
+            NSColor(calibratedRed:0.93,green:0.96,blue:0.91,alpha:1).setFill()
+            NSBezierPath(roundedRect:bounds,xRadius:20,yRadius:20).fill()
+        }
+        if !desktopMode { pose?.draw(in:NSRect(x:CGFloat(foxIndex)*160+35,y:88,width:140,height:152)) }
         for i in 0..<3 {
             let x=CGFloat(i)*160+48
             let available = game.phase != .hint || game.candidates.contains(i)
@@ -97,6 +100,7 @@ final class CompanionRoom:NSObject,NSWindowDelegate {
     private var journalPicker:NSPopUpButton?
     private var note:NSTextField?
     private var generation=0
+    private var desktopMode=false
     var animate:((PetAction)->Void)?
     var taskDetail="还没有交办任务。"
     var onInteraction:((Bool)->Void)?
@@ -104,7 +108,7 @@ final class CompanionRoom:NSObject,NSWindowDelegate {
         self.store=store;self.frames=frames
         window=RoomWindow(contentRect:NSRect(x:0,y:0,width:560,height:470),styleMask:[.titled,.closable,.miniaturizable],backing:.buffered,defer:false)
         super.init()
-        window.title="溯溯 · 林间小屋 2.0";window.isReleasedWhenClosed=false;window.delegate=self
+        window.title="溯溯 · 林间小屋 2.2";window.isReleasedWhenClosed=false;window.delegate=self
         let root=NSView(frame:NSRect(x:0,y:0,width:560,height:470))
         root.wantsLayer=true;root.layer?.backgroundColor=NSColor.windowBackgroundColor.cgColor
         window.contentView=root
@@ -131,6 +135,16 @@ final class CompanionRoom:NSObject,NSWindowDelegate {
             let alert=NSAlert();alert.messageText="这一步没有保存成功";alert.informativeText=error.localizedDescription;alert.runModal();return false
         }
     }
+    func desktopView(tab:Int)->NSView {
+        desktopMode=true;segment.selectedSegment=tab;render()
+        let wrapper=NSView(frame:NSRect(x:0,y:0,width:512,height:tab==0 ? 180 : 350))
+        content.removeFromSuperview();content.frame.origin=NSPoint(x:0,y:0);wrapper.addSubview(content)
+        message.removeFromSuperview();message.frame=NSRect(x:10,y:tab==0 ? 144 : 310,width:492,height:32);wrapper.addSubview(message)
+        return wrapper
+    }
+    var desktopTaskCommand:String {taskCommand}
+    func exportDesktopSave(){exportSave()}
+    func importDesktopSave(){importSave()}
     func show(tab:Int=0) {
         segment.selectedSegment=tab;render();window.makeKeyAndOrderFront(nil);NSApp.activate(ignoringOtherApps:true)
         onInteraction?(true)
@@ -144,8 +158,8 @@ final class CompanionRoom:NSObject,NSWindowDelegate {
         switch segment.selectedSegment {
         case 0:
             message.stringValue="溯溯闭上眼啦。点击一堆落叶，把松果藏进去。"
-            let view=ForestGameView(frame:NSRect(x:0,y:30,width:512,height:250))
-            view.pose=frames.stretch[3];view.choose={ [weak self] in self?.choosePile($0) }
+            let view=ForestGameView(frame:NSRect(x:0,y:30,width:512,height:desktopMode ? 100 : 250))
+            view.pose=frames.stretch[3];view.desktopMode=desktopMode;view.choose={ [weak self] in self?.choosePile($0) }
             content.addSubview(view);forest=view
             button("再玩一局",x:0,y:0,action:#selector(newGame))
             button("让它自己选",x:180,y:0,action:#selector(noHint))
@@ -272,7 +286,7 @@ final class CompanionRoom:NSObject,NSWindowDelegate {
             var game=PineconeGame();game.hide(at:hidden);game.phase = .hint;game.reveal(hidden);precondition(game.found)
             game.reveal((hidden+1)%3);precondition(!game.found && game.hidden==hidden)
         }
-        window.makeKeyAndOrderFront(nil)
+        window.orderOut(nil)
         segment.selectedSegment=0;render()
         choosePile(1)
         precondition(forest?.game.phase == .sniff)

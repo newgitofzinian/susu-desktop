@@ -1,0 +1,10 @@
+PASS: native horizontal walk targets and window motion; 12 new animation poses rendered in work/free modes; one-shot completion and interruption verified.
+PASS: persistent water card rendered; both button actions, five-minute snooze and preview outside work mode verified.
+PASS: 16 native work territories confine dragging, walking, running and the full pet window; water reminder rendered.
+PASS: 37 frames loaded; tail poses, walk and run in both directions rendered; opaque input and click-through checked; native window moved partially off-screen at all four corners while keeping an opaque body patch visible.
+PASS: CLI to app task badge/journal integration, result dedup and hidden grid preview.
+PASS: 2.0 six room pages, game results, preview isolation and actual left/right 100-point journeys at all three sizes.
+PASS: 2.1 four activity pages; ordered cue playback, completion, interrupt and quiet-state guard.
+PASS: 2.2 studio pages, scarf template import/validation, postcard export and closeup sequence.
+PASS: 2.3 borderless desktop house; taking out, resting, packing and staying indoors; interrupted outing sequences; transparent input and desktop props.
+Previews: /private/tmp/susu-23-verified
