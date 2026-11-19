@@ -6,7 +6,7 @@ final class CloseupView:NSView {
     var muted=true
     var feedback:((String)->Void)?
     var menuProvider:(()->NSMenu)?
-    private var hitPixels:NSBitmapImageRep?
+    private var hitPixels: [ObjectIdentifier:NSBitmapImageRep] = [:]
     private var ear=0
     private var progress:CGFloat=0
     private var timer:Timer?
@@ -19,10 +19,16 @@ final class CloseupView:NSView {
     private func rect(_ unit:NSRect)->NSRect {NSRect(x:actor.minX+unit.minX*actor.width,y:actor.minY+unit.minY*actor.height,width:unit.width*actor.width,height:unit.height*actor.height)}
     private let ears=[NSRect(x:20.0/192,y:130.0/208,width:52.0/192,height:78.0/208),NSRect(x:95.0/192,y:130.0/208,width:55.0/192,height:78.0/208)]
     private let tail=[NSPoint(x:0.7533,y:0.4375),NSPoint(x:0.8215,y:0.4170),NSPoint(x:0.8694,y:0.3702)]
+    private var reactionIndex: Int { happy ? 2 : progress > 0 ? ear : -1 }
+    private var selectedImage: NSImage? { reactions.indices.contains(reactionIndex) ? reactions[reactionIndex] : image }
+    func setAppearance(idle: CharacterFrame, reactions: [CharacterFrame]) {
+        image = idle.image
+        self.reactions = reactions.map(\.image)
+        hitPixels = Dictionary(uniqueKeysWithValues: ([idle] + reactions).map { (ObjectIdentifier($0.image), $0.pixels) })
+        needsDisplay = true
+    }
     override func draw(_ dirtyRect:NSRect) {
-        guard image != nil else{return}
-        let reactionIndex=happy ? 2 : progress>0 ? ear : -1
-        let selected=reactions.indices.contains(reactionIndex) ? reactions[reactionIndex] : image!
+        guard let selected=selectedImage else{return}
         selected.draw(in:actor)
         if reactionIndex>=0{return}
         for (i,p) in tail.enumerated() {
@@ -53,12 +59,13 @@ final class CloseupView:NSView {
         needsDisplay=true
     }
     func containsVisible(_ point:NSPoint)->Bool {
-        guard actor.contains(point),image != nil else{return false}
-        if hitPixels==nil,let data=image.tiffRepresentation {hitPixels=NSBitmapImageRep(data:data)}
-        guard let bitmap=hitPixels else{return false}
+        guard actor.contains(point), let selected=selectedImage else{return false}
+        let key = ObjectIdentifier(selected)
+        if hitPixels[key] == nil, let data=selected.tiffRepresentation {hitPixels[key]=NSBitmapImageRep(data:data)}
+        guard let bitmap=hitPixels[key] else{return false}
         let x=min(bitmap.pixelsWide-1,max(0,Int((point.x-actor.minX)/actor.width*CGFloat(bitmap.pixelsWide))))
         let y=min(bitmap.pixelsHigh-1,max(0,bitmap.pixelsHigh-1-Int((point.y-actor.minY)/actor.height*CGFloat(bitmap.pixelsHigh))))
-        return (bitmap.colorAt(x:x,y:y)?.alphaComponent ?? 0)>0.1
+        return AlphaHitMask.hit(bitmap: bitmap, x: x, y: y)
     }
     override func rightMouseDown(with event:NSEvent) {
         if let menu=menuProvider?(){NSMenu.popUpContextMenu(menu,with:event,for:self)}

@@ -12,8 +12,14 @@ var directory=CompanionStore.defaultDirectory
 if arguments.first=="--data-dir", arguments.count>2 {
     directory=URL(fileURLWithPath:arguments[1]);arguments.removeFirst(2)
 }
-guard arguments.count>=3,arguments[0]=="watch",arguments[1]=="--" else {
-    fputs("Usage: susu [--data-dir DIR] watch -- command [arguments]\n",stderr);exit(2)
+var taskName: String?
+if arguments.count >= 5, arguments[0] == "watch", arguments[1] == "--name" {
+    taskName = String(arguments[2].prefix(200))
+    arguments.removeSubrange(1...2)
+}
+guard arguments.count >= 3, arguments[0] == "watch", arguments[1] == "--" else {
+    fputs("Usage: susu [--data-dir DIR] watch [--name NAME] -- command [arguments]\n", stderr)
+    exit(2)
 }
 let folder=directory.appendingPathComponent("tasks")
 do {
@@ -27,10 +33,12 @@ do {
     guard fcntl(lockFD,F_SETLK,&lock) != -1 else {fputs("Susu is already watching a task.\n",stderr);exit(3)}
     let identifier=UUID().uuidString
     let command=Array(arguments.dropFirst(2))
-    let name=command.joined(separator:" ")
+    let name = taskName ?? command.joined(separator: " ")
     let eventURL=folder.appendingPathComponent(identifier+".json")
+    let watcherPID = getpid()
+    let watcherStart = processStartTime(watcherPID)
     func writeEvent(_ status:String,code:Int32?=nil)throws {
-        let event=TaskEvent(id:identifier,name:name,status:status,pid:getpid(),date:Date(),exitCode:code)
+        let event=TaskEvent(id:identifier,name:name,status:status,pid:watcherPID,date:Date(),exitCode:code,processStartTime: watcherStart)
         try JSONEncoder().encode(event).write(to:eventURL,options:.atomic)
     }
     signal(SIGINT,relay);signal(SIGTERM,relay)

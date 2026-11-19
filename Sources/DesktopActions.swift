@@ -1,9 +1,71 @@
 import AppKit
 
-final class DesktopBubble:NSPanel {
-    var dismiss:(()->Void)?
-    override var canBecomeKey:Bool {true}
-    override func cancelOperation(_ sender:Any?) {orderOut(nil);dismiss?()}
+enum DesktopDismissal {
+    static let key = "SusuDesktop.idleDismissSeconds"
+    static let choices = [15, 30, 60, 0]
+
+    static var seconds: Int {
+        guard let value = UserDefaults.standard.object(forKey: key) as? Int, choices.contains(value) else { return 30 }
+        return value
+    }
+}
+
+final class DesktopBubble: NSPanel {
+    var dismiss: (() -> Void)?
+    private var idleTimer: Timer?
+    private var lastInteraction = ProcessInfo.processInfo.systemUptime
+    private var postponeDismissal: (() -> Bool)?
+    override var canBecomeKey: Bool { true }
+
+    func armIdleDismissal(postpone: (() -> Bool)? = nil) {
+        idleTimer?.invalidate()
+        postponeDismissal = postpone
+        lastInteraction = ProcessInfo.processInfo.systemUptime
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+            self?.checkIdle()
+        }
+        timer.tolerance = 0.1
+        idleTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    func checkIdle(at now: TimeInterval = ProcessInfo.processInfo.systemUptime,
+                   limit: Int = DesktopDismissal.seconds) {
+        guard idleTimer != nil, isVisible else { return }
+        let composing = (firstResponder as? NSTextView)?.hasMarkedText() == true
+        let dragging = NSEvent.pressedMouseButtons != 0 && frame.contains(NSEvent.mouseLocation)
+        if composing || dragging || NSApp.modalWindow != nil || postponeDismissal?() == true {
+            lastInteraction = now
+            return
+        }
+        if limit > 0, now - lastInteraction >= Double(limit) { cancelOperation(nil) }
+    }
+
+    override func sendEvent(_ event: NSEvent) {
+        switch event.type {
+        case .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp, .otherMouseDown, .otherMouseUp,
+             .leftMouseDragged, .rightMouseDragged, .otherMouseDragged, .scrollWheel, .keyDown, .keyUp:
+            lastInteraction = ProcessInfo.processInfo.systemUptime
+        default: break
+        }
+        super.sendEvent(event)
+    }
+
+    override func orderOut(_ sender: Any?) {
+        idleTimer?.invalidate()
+        idleTimer = nil
+        postponeDismissal = nil
+        super.orderOut(sender)
+    }
+
+    override func close() {
+        idleTimer?.invalidate()
+        idleTimer = nil
+        postponeDismissal = nil
+        super.close()
+    }
+
+    override func cancelOperation(_ sender: Any?) { orderOut(nil); dismiss?() }
 }
 
 /// One temporary speech/prop surface, positioned beside the actual desktop pet.
@@ -19,13 +81,14 @@ final class DesktopActions:NSObject {
     var onPresent:(()->Void)?
     var onDismiss:(()->Void)?
     private var hitTimer:Timer?
+    private var lastHitLocation:NSPoint?
     var isVisible:Bool {panel?.isVisible==true}
     private var panel:DesktopBubble?
     private var targets:[ActionTarget]=[]
     init(store:CompanionStore,frames:SpriteFrames,room:CompanionRoom,activities:ActivitiesRoom,anchor:@escaping()->NSRect) {
         self.store=store;self.frames=frames;self.room=room;self.activities=activities;self.anchor=anchor
     }
-    func present(_ view:NSView,glass:Bool=true) {
+    func present(_ view: NSView, glass: Bool = true, postponeDismissal: (() -> Bool)? = nil) {
         interrupt();onPresent?()
         let bubble=DesktopBubble(contentRect:view.bounds.insetBy(dx:-12,dy:-12),styleMask:[.borderless,.nonactivatingPanel],backing:.buffered,defer:false)
         bubble.isOpaque=false;bubble.backgroundColor = .clear;bubble.hasShadow=glass;bubble.level = .floating
@@ -43,11 +106,18 @@ final class DesktopActions:NSObject {
         let y=r.maxY+10+bubble.frame.height<=area.maxY ? r.maxY+10 : max(area.minY+4,r.minY-bubble.frame.height-10)
         bubble.setFrameOrigin(NSPoint(x:min(max(r.midX-bubble.frame.width/2,area.minX+4),area.maxX-bubble.frame.width-4),y:y))
         bubble.orderFrontRegardless();panel=bubble
+        bubble.armIdleDismissal(postpone: postponeDismissal)
         if !glass {
+            let animatingSilhouette = view is CloseupView
             hitTimer=Timer.scheduledTimer(withTimeInterval:1.0/30,repeats:true){[weak self,weak bubble] _ in
-                guard let self,let bubble else{return}
-                let point=bubble.convertPoint(fromScreen:NSEvent.mouseLocation)
-                bubble.ignoresMouseEvents = !self.propHit(point,in:bubble.contentView!)
+                guard let self, let bubble, bubble.isVisible, let root = bubble.contentView else {
+                    self?.hitTimer?.invalidate(); self?.hitTimer = nil; return
+                }
+                let point = bubble.convertPoint(fromScreen: NSEvent.mouseLocation)
+                guard animatingSilhouette || self.lastHitLocation != point else { return }
+                self.lastHitLocation = point
+                let passThrough = !self.propHit(point, in: root)
+                if bubble.ignoresMouseEvents != passThrough { bubble.ignoresMouseEvents = passThrough }
             }
         }
     }
@@ -60,7 +130,7 @@ final class DesktopActions:NSObject {
         if (view is NSControl || view is FoodTile) && view.bounds.contains(point){return true}
         return view.subviews.contains{self.propHit(view.convert(point,to:$0),in:$0)}
     }
-    func interrupt(){hitTimer?.invalidate();hitTimer=nil;panel?.dismiss=nil;panel?.close();panel=nil;targets=[];room.interrupt();onDismiss?()}
+    func interrupt(){hitTimer?.invalidate();hitTimer=nil;lastHitLocation=nil;panel?.dismiss=nil;panel?.close();panel=nil;targets=[];room.interrupt();onDismiss?()}
     private func button(_ title:String,frame:NSRect,in view:NSView,action:@escaping()->Void) {
         let target=ActionTarget(action);targets.append(target)
         let button=NSButton(title:title,target:target,action:#selector(ActionTarget.invoke));button.bezelStyle = .rounded;button.frame=frame;view.addSubview(button)
@@ -73,10 +143,11 @@ final class DesktopActions:NSObject {
         let view=NSView(frame:NSRect(x:0,y:0,width:360,height:120))
         let label=NSTextField(labelWithString:prompt);label.frame=NSRect(x:6,y:90,width:348,height:24);view.addSubview(label)
         let input=NSTextField();input.frame=NSRect(x:6,y:46,width:348,height:32);view.addSubview(input)
+        let error=NSTextField(labelWithString:"");error.textColor = .systemRed;error.frame=NSRect(x:6,y:28,width:348,height:18);view.addSubview(error)
         present(view)
         button("记住这个名字",frame:NSRect(x:6,y:4,width:348,height:30),in:view){[weak self] in
             let text=input.stringValue.trimmingCharacters(in:.whitespacesAndNewlines)
-            guard !text.isEmpty,text.count<=80 else{return}
+            guard !text.isEmpty,text.count<=80 else { error.stringValue="请输入 1–80 个字符。"; NSSound.beep(); input.window?.makeFirstResponder(input); return }
             completion(text);self?.interrupt()
         }
     }
@@ -100,13 +171,6 @@ final class DesktopActions:NSObject {
                 guard let self else{return};let chosen=self.store.preferred(pair[0],pair[1]);self.animate?(.stretch);self.say("溯溯先闻了闻\(foodNames[chosen])，轻轻把盘子拨近。")
             }
         }
-    }
-    func task(_ text:String){
-        let view=NSView(frame:NSRect(x:0,y:0,width:400,height:170))
-        let label=NSTextField(wrappingLabelWithString:text);label.frame=NSRect(x:6,y:85,width:388,height:80);view.addSubview(label)
-        let command=NSTextField(string:room.desktopTaskCommand);command.isEditable=false;command.isSelectable=true;command.frame=NSRect(x:6,y:40,width:388,height:34);view.addSubview(command)
-        present(view)
-        button("复制交办命令",frame:NSRect(x:6,y:0,width:180,height:30),in:view){[weak self] in guard let self else{return};NSPasteboard.general.clearContents();NSPasteboard.general.setString(self.room.desktopTaskCommand,forType:.string)}
     }
     func letters(){present(activities.desktopView(tab:3))}
     func cues(){present(activities.desktopView(tab:0))}

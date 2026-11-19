@@ -15,11 +15,13 @@ final class SpriteFrames {
     let play: [NSImage]
     let closeup: [NSImage]
     let houseArtwork: HouseArtwork
+    let seasons: SeasonArtwork
     let idlePixels: [NSBitmapImageRep]
     let walkPixels: [NSBitmapImageRep]
     let runPixels: [NSBitmapImageRep]
     let stretchPixels: [NSBitmapImageRep]
     let playPixels: [NSBitmapImageRep]
+    let closeupPixels: [NSBitmapImageRep]
     let safetyCore: NSRect
 
     init(resources: URL) throws {
@@ -43,14 +45,39 @@ final class SpriteFrames {
         (run, runPixels) = try load("running-right", count: 8)
         (stretch, stretchPixels) = try load("stretch", count: 6)
         (play, playPixels) = try load("play", count: 6)
-        (closeup, _) = try load("closeup", count: 3)
+        (closeup, closeupPixels) = try load("closeup", count: 3)
         houseArtwork=try HouseArtwork(resources:resources)
+        seasons=try SeasonArtwork(resources:resources)
         let data = try Data(contentsOf: resources.appendingPathComponent("frames/visibility.json"))
         guard let values = try JSONSerialization.jsonObject(with: data) as? [String: Double],
               let x = values["x"], let y = values["y"], let w = values["width"], let h = values["height"], w > 0, h > 0 else {
             throw NSError(domain: "Susu", code: 4, userInfo: [NSLocalizedDescriptionKey: "缺少屏幕边缘可见区域信息。"])
         }
         safetyCore = NSRect(x:x,y:y,width:w,height:h)
+    }
+
+    func character(_ pose: CharacterPose, frame: Int, season: PetSeason?) -> CharacterFrame {
+        let index = frame % pose.frameCount
+        if let season, pose == .idle || pose == .walk {
+            let walking = pose == .walk
+            let dressed = seasons[season]
+            return CharacterFrame(image: dressed.image(walking: walking, frame: index),
+                                  pixels: dressed.pixels(walking: walking, frame: index))
+        }
+        let sequence: ([NSImage], [NSBitmapImageRep])
+        switch pose {
+        case .idle: sequence = (idle, idlePixels)
+        case .walk: sequence = (walk, walkPixels)
+        case .run: sequence = (run, runPixels)
+        case .stretch: sequence = (stretch, stretchPixels)
+        case .play: sequence = (play, playPixels)
+        case .closeup: sequence = (closeup, closeupPixels)
+        case .carry: sequence = (houseArtwork.carry, houseArtwork.carryPixels)
+        case .blanket: sequence = (houseArtwork.blanketAction, houseArtwork.blanketPixels)
+        }
+        let base = CharacterFrame(image: sequence.0[index], pixels: sequence.1[index])
+        guard let season else { return base }
+        return seasons.dressing.frame(for: season, pose: pose, index: index, base: base)
     }
 }
 
@@ -111,6 +138,7 @@ final class PetView: NSView {
     var greetingDuration: TimeInterval = 2.8
     var greetingAge: TimeInterval = 100
     var speech = ""
+    var speechStyle = SpeechBubbleStyle()
     var dragging = false
     private var mouseStart = NSPoint.zero
     private var windowStart = NSPoint.zero
@@ -119,17 +147,21 @@ final class PetView: NSView {
     private var previousMirrored = false
     var transitionAge: TimeInterval = 10
 
-    var currentImage: NSImage {
-        let sequence = action.map { $0 == .stretch ? frames.stretch : frames.play } ?? (walking ? (running ? frames.run : frames.walk) : frames.idle)
-        return sequence[frameIndex % sequence.count]
+    var currentPose: CharacterPose {
+        if let action { return action == .stretch ? .stretch : .play }
+        return walking ? (running ? .run : .walk) : .idle
     }
-    var currentPixels: NSBitmapImageRep {
-        let sequence = action.map { $0 == .stretch ? frames.stretchPixels : frames.playPixels } ?? (walking ? (running ? frames.runPixels : frames.walkPixels) : frames.idlePixels)
-        return sequence[frameIndex % sequence.count]
+    private var currentFrame: CharacterFrame { frames.character(currentPose, frame: frameIndex, season: scarfState.season) }
+    var currentImage: NSImage { currentFrame.image }
+    var currentPixels: NSBitmapImageRep { currentFrame.pixels }
+    private var mirrored: Bool { (walking || action != nil) && facesLeft }
+    var currentSafetyCore:NSRect {
+        if action == nil,!running,let season=scarfState.season {return frames.seasons[season].safetyCore}
+        return frames.safetyCore
     }
     func setMovement(walking nextWalking: Bool, running nextRunning: Bool, left: Bool, action nextAction: PetAction? = nil) {
         if action != nextAction || walking != nextWalking || running != nextRunning || (nextWalking && left != facesLeft) {
-            previousImage = currentImage; previousMirrored = walking && facesLeft; transitionAge = 0
+            previousImage = currentImage; previousMirrored = mirrored; transitionAge = 0
             walking = nextWalking; running = nextRunning; facesLeft = left; action = nextAction; frameIndex = 0
         }
     }
@@ -150,7 +182,8 @@ final class PetView: NSView {
             if letterWaiting { ("✉️" as NSString).draw(at:NSPoint(x:8,y:70),withAttributes:[.font:NSFont.systemFont(ofSize:28)]) }
             return
         }
-        let mix = CGFloat(min(1, transitionAge / 0.16))
+        // Complete dressed poses switch together so a turn doesn't show two overlapping outfits.
+        let mix = scarfState.season == nil ? CGFloat(min(1, transitionAge / 0.16)) : 1
         func drawSprite(_ image: NSImage, mirrored: Bool, opacity: CGFloat) {
         NSGraphicsContext.saveGraphicsState()
         if mirrored {
@@ -162,7 +195,7 @@ final class PetView: NSView {
         NSGraphicsContext.restoreGraphicsState()
         }
         if let previousImage, mix < 1 { drawSprite(previousImage, mirrored: previousMirrored, opacity: 1-mix) }
-        drawSprite(currentImage, mirrored: facesLeft && walking, opacity: mix)
+        drawSprite(currentImage, mirrored: mirrored, opacity: mix)
         if action == nil && !running, let scarf=ScarfRenderer.overlay(state:scarfState,walking:walking,frame:frameIndex) {
             drawSprite(scarf,mirrored:facesLeft && walking,opacity:mix)
         }
@@ -173,33 +206,31 @@ final class PetView: NSView {
             (taskBadge as NSString).draw(at:NSPoint(x:6,y:20),withAttributes:[.font:NSFont.systemFont(ofSize:28)])
         }
         if greetingAge < greetingDuration && !speech.isEmpty {
-            let font = NSFont.systemFont(ofSize: max(11, min(14, bounds.width / 15)), weight: .medium)
-            let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor(calibratedWhite: 0.98, alpha: 1)]
-            let textWidth = max(1, bounds.width - 32)
-            let textRect = (speech as NSString).boundingRect(with: NSSize(width: textWidth, height: 34), options: [.usesLineFragmentOrigin], attributes: attrs)
-            let box = NSRect(x: 4, y: actorRect.maxY + 4, width: max(1, bounds.width - 8), height: min(44, ceil(textRect.height) + 12))
-            NSColor(srgbRed: 0.12, green: 0.16, blue: 0.24, alpha: 0.96).setFill()
-            NSBezierPath(roundedRect: box, xRadius: 10, yRadius: 10).fill()
-            (speech as NSString).draw(with: NSRect(x: box.minX + 12, y: box.minY + 6, width: textWidth, height: box.height - 12), options: [.usesLineFragmentOrigin], attributes: attrs)
-
+            speechStyle.draw(speech, in: NSRect(x: 4, y: actorRect.maxY + 4, width: bounds.width - 8,
+                                                height: SpeechBubbleStyle.headroom - 6))
         }
     }
+
+    private var letterBadgeRect: NSRect {
+        away ? NSRect(x: 4, y: 60, width: 42, height: 48) : NSRect(x: bounds.width - 42, y: 20, width: 36, height: 36)
+    }
+    private let taskBadgeRect = NSRect(x: 6, y: 20, width: 36, height: 36)
 
     // Transparent padding passes clicks through to the user's other windows.
     func containsPet(_ point: NSPoint) -> Bool {
         if zoomHidden{return false}
-        if away && home {return letterWaiting && NSRect(x:4,y:60,width:42,height:48).contains(point)}
+        if away && home {return letterWaiting && letterBadgeRect.contains(point)}
         if away { return NSRect(x:4,y:25,width:min(140,bounds.width-8),height:letterWaiting ? 85 : 45).contains(point) }
-        if letterWaiting && NSRect(x:bounds.width-42,y:20,width:36,height:36).contains(point) { return true }
-        if !taskBadge.isEmpty && NSRect(x:6,y:20,width:36,height:36).contains(point) { return true }
+        if letterWaiting && letterBadgeRect.contains(point) { return true }
+        if !taskBadge.isEmpty && taskBadgeRect.contains(point) { return true }
         let rect = actorRect.offsetBy(dx: 0, dy: bounce)
         guard rect.contains(point) else { return false }
         let bitmap = currentPixels
         var x = Int((point.x - rect.minX) / rect.width * CGFloat(bitmap.pixelsWide))
-        if walking && facesLeft { x = bitmap.pixelsWide - 1 - x }
+        if mirrored { x = bitmap.pixelsWide - 1 - x }
         let y = bitmap.pixelsHigh - 1 - Int((point.y - rect.minY) / rect.height * CGFloat(bitmap.pixelsHigh))
         guard x >= 0, y >= 0, x < bitmap.pixelsWide, y < bitmap.pixelsHigh else { return false }
-        return (bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.12
+        return AlphaHitMask.hit(bitmap: bitmap, x: x, y: y, threshold: 0.12)
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -217,9 +248,12 @@ final class PetView: NSView {
     override func mouseUp(with event: NSEvent) {
         dragging = false
         if !moved {
-            if letterWaiting { owner?.showLetters() }
+            let point = convert(event.locationInWindow, from: nil)
+            if letterWaiting && letterBadgeRect.contains(point) { owner?.showLetters() }
             else if away { if home {owner?.showStudio()} else {owner?.showExpedition()} }
-            else if taskBadge.isEmpty { owner?.greet() } else { owner?.showTaskRoom() }
+            else if !taskBadge.isEmpty && taskBadgeRect.contains(point) { owner?.showTaskRoom() }
+            else if event.clickCount == 2 { owner?.showChat() }
+            else { owner?.greet() }
         }
         owner?.savePosition()
     }
@@ -234,11 +268,15 @@ final class PetView: NSView {
     }
 }
 
-final class PetController: NSObject, NSApplicationDelegate {
+final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var panel: PetPanel!
     var pet: PetView!
     var status: NSStatusItem!
-    var timer: Timer?
+    private var animationTimer: Timer?
+    private var activityTimer: Timer?
+    private let statusMenu = NSMenu()
+    private var statusMenuDirty = true
+    private var trackingStatusMenu = false
     var frames: SpriteFrames!
     private var startTime = ProcessInfo.processInfo.systemUptime
     private var lastTick = ProcessInfo.processInfo.systemUptime
@@ -251,19 +289,23 @@ final class PetController: NSObject, NSApplicationDelegate {
     private var studio: StudioRoom!
     private var chat: ChatRoom!
     private var desktop:DesktopActions!
+    private var taskBoard: TaskBoard!
+    private var pinnedControls: PinnedControls?
     private var cueActions: [PetAction] = []
     private var waterPreview = false
-    private var lastTaskPoll: TimeInterval = 0
+    private var waterSpeech = UserDefaults.standard.bool(forKey: "waterSpeech")
+    private let waterSpeechText = "喝口水，休息一下～"
     private var taskRunning = false
     private var taskState = ""
-    private var inRoom: Bool { room?.window.isVisible == true || activities?.window.isVisible == true || studio?.window.isVisible == true || chat?.window?.isVisible == true || desktop?.isVisible == true }
+    private var watchedTaskBadge = ""
+    private var inRoom: Bool { chat?.isVisible == true || desktop?.isVisible == true }
     private var runningMode = false
     private var speed: CGFloat = 0
     private var nextWalk: TimeInterval = 0
     private var walkClock: TimeInterval = 0
     private var action: PetAction?
     private var actionClock: TimeInterval = 0
-    private var autoWalk = UserDefaults.standard.object(forKey: "freeRoam") == nil ? true : UserDefaults.standard.bool(forKey: "freeRoam")
+    private var autoWalk = true
     private var quiet = UserDefaults.standard.bool(forKey: "quiet")
     private var suspended = false
     private var workMode = UserDefaults.standard.bool(forKey: "workMode")
@@ -280,6 +322,22 @@ final class PetController: NSObject, NSApplicationDelegate {
     }()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if CommandLine.arguments.contains("--outfit-preview") {
+            do {
+                let args = CommandLine.arguments
+                guard let index = args.firstIndex(of: "--preview-dir"), args.indices.contains(index + 1),
+                      let resources = Bundle.main.resourceURL else {
+                    throw NSError(domain: "SusuPreview", code: 1, userInfo: [NSLocalizedDescriptionKey: "请提供 --preview-dir <目录>"])
+                }
+                let artwork = try SpriteFrames(resources: resources)
+                try Self.exportOutfitPreviews(artwork, to: URL(fileURLWithPath: args[index + 1], isDirectory: true))
+            } catch {
+                fputs("Outfit preview failed: \(error.localizedDescription)\n", stderr)
+                exit(1)
+            }
+            NSApp.terminate(nil)
+            return
+        }
         do {
             guard let resources = Bundle.main.resourceURL else { throw NSError(domain: "Susu", code: 3) }
             frames = try SpriteFrames(resources: resources)
@@ -288,6 +346,9 @@ final class PetController: NSObject, NSApplicationDelegate {
         } catch {
             let alert = NSAlert(); alert.messageText = "溯溯暂时无法启动"; alert.informativeText = error.localizedDescription
             alert.runModal(); NSApp.terminate(nil); return
+        }
+        if !CommandLine.arguments.contains("--smoke-test") {
+            autoWalk = DesktopPreferences.migrate(.standard)
         }
         let minutes = UserDefaults.standard.integer(forKey: "waterMinutes")
         water.interval = Double([15,30,45,60].contains(minutes) ? minutes : 30) * 60
@@ -302,10 +363,8 @@ final class PetController: NSObject, NSApplicationDelegate {
         pet.registerForDraggedTypes([foodPasteboard])
         room = CompanionRoom(store:store,frames:frames)
         room.animate = { [weak self] in self?.startAction($0) }
-        room.onInteraction = { [weak self] _ in self?.stopWalking() }
         activities = ActivitiesRoom(store:store,frames:frames)
         activities.playCue = { [weak self] in self?.performCue($0) ?? false }
-        activities.onVisibility = { [weak self] in self?.stopWalking() }
         activities.onChange = { [weak self] in self?.syncActivities() }
         studio = StudioRoom(store:store,frames:frames)
         studio.onChange = { [weak self] in self?.syncActivities() }
@@ -320,10 +379,16 @@ final class PetController: NSObject, NSApplicationDelegate {
             try self.store.saveStudio(studioState)
         })
         desktop=DesktopActions(store:store,frames:frames,room:room,activities:activities,anchor:{[weak self] in self?.studio.desktopAnchor ?? self?.panel.frame ?? .zero})
+        let taskDefaults = CommandLine.arguments.contains("--smoke-test") ?
+            UserDefaults(suiteName: "Susu.Smoke.Tasks." + UUID().uuidString)! : UserDefaults.standard
+        taskBoard = TaskBoard(store: store, defaults: taskDefaults)
+        taskBoard.watcherIsRunning = { [weak self] in self?.taskRunning == true }
+        taskBoard.attach = { [weak self] view, busy in self?.desktop.present(view, postponeDismissal: busy) }
+        taskBoard.onChange = { [weak self] in self?.pollTasks(); self?.pollTaskReminders() }
         desktop.animate={ [weak self] action in self?.studio.releaseFox();self?.startAction(action) }
         desktop.invokeCue={ [weak self] actions in self?.studio.releaseFox();return self?.performCue(actions) ?? false }
         desktop.onChange={ [weak self] in self?.syncActivities() }
-        desktop.onPresent={ [weak self] in self?.stopWalking() }
+        desktop.onPresent={ [weak self] in self?.stopWalking(); self?.chat.dismissDesktopChat() }
         desktop.onDismiss={ [weak self] in self?.pet.zoomHidden=false;self?.pet.needsDisplay=true;self?.studio.stopCloseup() }
         studio.onReturnToDesktop={ [weak self] rect in
             guard let self else{return}
@@ -331,9 +396,17 @@ final class PetController: NSObject, NSApplicationDelegate {
         }
         studio.desktopMenu={ [weak self] in self?.makeMenu() ?? NSMenu() }
         studio.canStartHouse={ [weak self] in self?.quiet == false && self?.suspended == false }
-        chat.desktopAnchor={ [weak self] in self?.studio.desktopAnchor ?? self?.panel.frame ?? .zero }
+        chat.desktopAnchor = { [weak self] in
+            guard let self else { return .zero }
+            if self.studio.foxInNest, let nestAnchor = self.studio.desktopAnchor { return nestAnchor }
+            return self.panel.convertToScreen(self.pet.convert(self.pet.actorRect, to: nil))
+        }
+        chat.avatar = { [weak self] in
+            guard let self else { return nil }
+            return self.frames.character(.idle, frame: 0, season: self.store.save.studio.season).image
+        }
         syncActivities()
-        pet.setAccessibilityLabel("溯溯桌面宠物。点击回应，拖动移动，右键打开菜单。")
+        pet.setAccessibilityLabel("溯溯桌面宠物。点击回应，双击聊天，拖动移动，右键打开菜单。")
         pet.autoresizingMask = [.width, .height]; panel.contentView = pet
         let visible = NSScreen.main?.visibleFrame ?? NSRect(x: 0,y: 0,width: 1200,height: 800)
         let defaults = UserDefaults.standard
@@ -344,29 +417,66 @@ final class PetController: NSObject, NSApplicationDelegate {
         }
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         status.button?.image = NSImage(systemSymbolName: "pawprint.fill", accessibilityDescription: "溯溯")
-        status.button?.toolTip = "溯溯 · 桌面小伙伴"; status.menu = makeMenu()
+        statusMenu.autoenablesItems = false
+        statusMenu.delegate = self
+        status.menu = statusMenu
+        refreshMenu()
+        menuNeedsUpdate(statusMenu)
         panel.orderFrontRegardless()
         NotificationCenter.default.addObserver(self, selector: #selector(screenChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
         let workspace = NSWorkspace.shared.notificationCenter
         workspace.addObserver(self, selector: #selector(sleeping), name: NSWorkspace.screensDidSleepNotification, object: nil)
         workspace.addObserver(self, selector: #selector(waking), name: NSWorkspace.screensDidWakeNotification, object: nil)
         greet(text: "你好，我是溯溯。")
-        if !CommandLine.arguments.contains("--smoke-test"),UserDefaults.standard.object(forKey:"houseShown")==nil || UserDefaults.standard.bool(forKey:"houseShown") {
-            DispatchQueue.main.asyncAfter(deadline:.now()+0.6){[weak self] in self?.studio.showHouse()}
-        }
         if CommandLine.arguments.contains("--show-home") && !CommandLine.arguments.contains("--smoke-test") {
             DispatchQueue.main.asyncAfter(deadline:.now()+1){[weak self] in self?.studio.restOutside()}
         }
         nextWalk = ProcessInfo.processInfo.systemUptime + 8
-        timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in self?.tick() }
-        RunLoop.main.add(timer!, forMode: .common)
+        updateAnimationTimer()
+        startActivityTimer()
+        if let backup = store.recoveredBackupURL {
+            DispatchQueue.main.async { [weak self] in self?.showSaveRecovery(backup) }
+        }
         if CommandLine.arguments.contains("--preview-water") && !CommandLine.arguments.contains("--smoke-test") {
             DispatchQueue.main.asyncAfter(deadline:.now()+0.8) { [weak self] in self?.previewWater() }
         }
         if CommandLine.arguments.contains("--smoke-test") {
             // Exercise the actual drawing and alpha hit testing without staying resident.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.smokeTest() }
+            Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { [weak self] _ in self?.smokeTest() }
         }
+    }
+
+    private func showSaveRecovery(_ backup: URL) {
+        let alert = NSAlert()
+        alert.messageText = "旧存档暂时无法读取"
+        alert.informativeText = "溯溯已用空白存档启动，并保留了原文件。你可以打开备份所在位置，检查或修复后再导入。"
+        alert.addButton(withTitle: "继续")
+        alert.addButton(withTitle: "显示原文件")
+        if alert.runModal() == .alertSecondButtonReturn { NSWorkspace.shared.activateFileViewerSelecting([backup]) }
+    }
+
+    private func updateAnimationTimer() {
+        guard panel?.isVisible == true, !suspended else {
+            animationTimer?.invalidate()
+            animationTimer = nil
+            return
+        }
+        guard animationTimer == nil else { return }
+        lastTick = ProcessInfo.processInfo.systemUptime
+        let timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in self?.tick() }
+        animationTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func startActivityTimer() {
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            self?.pollTasks()
+            self?.pollTaskReminders()
+            self?.syncActivities()
+        }
+        timer.tolerance = 0.2
+        activityTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
     }
 
     private func screenID(_ screen: NSScreen) -> Int {
@@ -380,7 +490,7 @@ final class PetController: NSObject, NSApplicationDelegate {
         return WorkTerritory.cell(in: screen.visibleFrame, index: territory)
     }
     private var displayWidth: CGFloat {
-        workArea.map { WorkTerritory.width(preferred: scale, area: $0) } ?? scale
+        workArea.map { WorkTerritory.width(preferred: scale, area: $0, bubbleHeight: SpeechBubbleStyle.headroom) } ?? scale
     }
     private func applyWorkArea(center: Bool = false) {
         stopWalking()
@@ -392,7 +502,7 @@ final class PetController: NSObject, NSApplicationDelegate {
         move(to: point); savePosition(); pet.needsDisplay = true
     }
 
-    private func panelSize(_ width: CGFloat) -> NSSize { NSSize(width: width, height: width * 208 / 192 + 52) }
+    private func panelSize(_ width: CGFloat) -> NSSize { NSSize(width: width, height: width * 208 / 192 + SpeechBubbleStyle.headroom) }
 
     func move(to point: NSPoint) {
         guard panel != nil else { return }
@@ -400,16 +510,18 @@ final class PetController: NSObject, NSApplicationDelegate {
             let constrained = WorkTerritory.constrain(point, window:panel.frame.size, area:area)
             logicalPosition = constrained
             panel.setFrameOrigin(constrained)
+            chat?.repositionDesktop()
             return
         }
         let sprite = NSSize(width:panel.frame.width,height:panel.frame.width*208/192)
-        let allowed = DesktopBounds.constrain(point, sprite:sprite, core:frames.safetyCore,
+        let allowed = DesktopBounds.constrain(point, sprite:sprite, core:pet.currentSafetyCore,
                                                screens:NSScreen.screens.map(\.visibleFrame))
         logicalPosition = allowed
         panel.setFrameOrigin(allowed)
+        chat?.repositionDesktop()
     }
     func savePosition() {
-        guard !CommandLine.arguments.contains("--smoke-test") else { return }
+        guard let panel, !CommandLine.arguments.contains("--smoke-test") else { return }
         UserDefaults.standard.set(panel.frame.minX, forKey: "positionX")
         UserDefaults.standard.set(panel.frame.minY, forKey: "positionY")
     }
@@ -417,7 +529,6 @@ final class PetController: NSObject, NSApplicationDelegate {
     private func tick() {
         let now = ProcessInfo.processInfo.systemUptime
         let dt = min(0.1, max(0, now-lastTick)); lastTick = now
-        if now-lastTaskPoll>1 { lastTaskPoll=now;pollTasks();syncActivities() }
         if !waterPreview && water.poll(at: now, active: workMode && !quiet && !suspended && panel.isVisible && !reminderVisible) {
             remindWater()
         }
@@ -472,7 +583,8 @@ final class PetController: NSObject, NSApplicationDelegate {
             pet.frameIndex = index; pet.walking = walking; pet.needsDisplay = true
         }
         let local = pet.convert(panel.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
-        panel.ignoresMouseEvents = !pet.dragging && !pet.containsPet(local)
+        let passThrough = !pet.dragging && !pet.containsPet(local)
+        if panel.ignoresMouseEvents != passThrough { panel.ignoresMouseEvents = passThrough }
     }
 
     func stopWalking() { cueActions = []; logicalPosition = panel?.frame.origin; target = nil; action = nil; actionClock = 0; speed = 0; nextWalk = ProcessInfo.processInfo.systemUptime + Double.random(in: 8...18) }
@@ -507,12 +619,12 @@ final class PetController: NSObject, NSApplicationDelegate {
             let upper = WorkTerritory.constrain(NSPoint(x:cell.maxX,y:cell.maxY), window:panel.frame.size, area:cell)
             destination = NSPoint(x:CGFloat.random(in:lower.x...upper.x),y:CGFloat.random(in:lower.y...upper.y))
         } else {
-            destination = DesktopBounds.constrain(raw,sprite:sprite,core:frames.safetyCore,screens:NSScreen.screens.map(\.visibleFrame))
+            destination = DesktopBounds.constrain(raw,sprite:sprite,core:pet.currentSafetyCore,screens:NSScreen.screens.map(\.visibleFrame))
         }
         if !running {
             if workArea != nil { destination.y = panel.frame.minY }
             else {
-                destination = WalkingRoute.destination(desiredX:raw.x,from:panel.frame.origin,sprite:sprite,core:frames.safetyCore,screens:NSScreen.screens.map(\.visibleFrame))
+                destination = WalkingRoute.destination(desiredX:raw.x,from:panel.frame.origin,sprite:sprite,core:pet.currentSafetyCore,screens:NSScreen.screens.map(\.visibleFrame))
             }
         }
         let distance = hypot(destination.x-panel.frame.minX,destination.y-panel.frame.minY)
@@ -530,7 +642,7 @@ final class PetController: NSObject, NSApplicationDelegate {
         guard !quiet else { return }
         pet.greetingDuration = duration
         greetingStart = ProcessInfo.processInfo.systemUptime
-        pet.speech = text ?? ["我在呢。", "找到你啦！", "陪你慢慢来。", "线索收到！"].randomElement()!
+        pet.speech = text ?? (SpeechBubbleStyle.greetings.randomElement() ?? "我在呢。")
         pet.needsDisplay = true
     }
     @objc func remindWater() {
@@ -561,9 +673,25 @@ final class PetController: NSObject, NSApplicationDelegate {
             (view.subviews.first as? NSTextField)?.stringValue = waterPreview ? "喝水提醒 · 预览" : "溯溯的工作小提醒"
         }
         positionWaterCard(); waterPanel?.orderFrontRegardless(); refreshMenu()
-        greet(text:"喝口水，休息一下～",duration:12)
+        if waterSpeech { greet(text: waterSpeechText) }
     }
-    private func dismissWaterCard() { waterPanel?.orderOut(nil); waterPreview=false }
+    private func dismissWaterCard() {
+        waterPanel?.orderOut(nil)
+        waterPreview = false
+        clearWaterSpeech()
+    }
+    private func clearWaterSpeech() {
+        guard pet?.speech == waterSpeechText else { return }
+        greetingStart = -100
+        pet.greetingAge = 100
+        pet.needsDisplay = true
+    }
+    @objc private func toggleWaterSpeech() {
+        waterSpeech.toggle()
+        UserDefaults.standard.set(waterSpeech, forKey: "waterSpeech")
+        if !waterSpeech { clearWaterSpeech() }
+        refreshMenu()
+    }
     @objc func waterDone() {
         if waterPreview { dismissWaterCard();refreshMenu();return }
         dismissWaterCard(); water.restart(at:ProcessInfo.processInfo.systemUptime)
@@ -627,18 +755,80 @@ final class PetController: NSObject, NSApplicationDelegate {
         gridDismiss = task; DispatchQueue.main.asyncAfter(deadline:.now()+3,execute:task)
     }
     @objc func sayHello() { greet() }
+    @objc private func togglePinnedControls() {
+        if let pinnedControls, pinnedControls.isVisible {
+            pinnedControls.close()
+            return
+        }
+        let controls = PinnedControls { [weak self] in self?.makeMenu(includePin: false) ?? NSMenu() }
+        controls.onClose = { [weak self] in
+            self?.pinnedControls = nil
+            self?.refreshMenu()
+        }
+        pinnedControls = controls
+        controls.show(at: studio.desktopAnchor ?? panel.frame)
+        refreshMenu()
+    }
+
+    @objc private func chooseBubbleTheme(_ item: NSMenuItem) {
+        guard let theme = SpeechBubbleStyle.Theme(rawValue: item.tag) else { return }
+        if theme == .custom {
+            let picker = NSColorPanel.shared
+            picker.showsAlpha = false
+            picker.setTarget(nil)
+            picker.color = pet.speechStyle.customColor ?? pet.speechStyle.background
+            picker.setTarget(self)
+            picker.setAction(#selector(changeBubbleColor(_:)))
+            picker.makeKeyAndOrderFront(nil)
+        } else {
+            pet.speechStyle.theme = theme
+            UserDefaults.standard.set(theme.rawValue, forKey: "speechBubbleTheme")
+            refreshBubble()
+        }
+    }
+
+    @objc private func changeBubbleColor(_ picker: NSColorPanel) {
+        guard let color = picker.color.usingColorSpace(.sRGB) else { return }
+        UserDefaults.standard.set([color.redComponent, color.greenComponent, color.blueComponent], forKey: "speechBubbleColor")
+        UserDefaults.standard.set(SpeechBubbleStyle.Theme.custom.rawValue, forKey: "speechBubbleTheme")
+        pet.speechStyle = SpeechBubbleStyle()
+        refreshBubble()
+    }
+
+    @objc private func chooseBubbleSize(_ item: NSMenuItem) {
+        guard SpeechBubbleStyle.textSizes.indices.contains(item.tag) else { return }
+        pet.speechStyle.sizeIndex = item.tag
+        UserDefaults.standard.set(item.tag, forKey: "speechBubbleSize")
+        refreshBubble()
+    }
+
+    private func refreshBubble() {
+        greet(text: "我在呢。")
+        pet.needsDisplay = true
+        refreshMenu()
+    }
     @objc func toggleAuto() { autoWalk.toggle(); UserDefaults.standard.set(autoWalk, forKey: "freeRoam"); if !autoWalk { stopWalking() }; refreshMenu() }
     @objc func toggleQuiet() {
         dismissWaterCard()
-        quiet.toggle(); UserDefaults.standard.set(quiet, forKey: "quiet")
-        if quiet {desktop?.interrupt();chat?.hideDesktop()};studio?.pauseHouse(quiet)
+        quiet.toggle()
+        UserDefaults.standard.set(quiet, forKey: "quiet")
+        if quiet {
+            desktop?.interrupt()
+            chat?.hideDesktop()
+        }
+        studio?.pauseHouse(quiet || suspended)
         water.restart(at:ProcessInfo.processInfo.systemUptime)
-        stopWalking(); pet.frameIndex = 0; pet.greetingAge = 100; pet.needsDisplay = true; refreshMenu()
+        stopWalking()
+        pet.frameIndex = 0
+        pet.greetingAge = 100
+        pet.needsDisplay = true
+        refreshMenu()
     }
     @objc func toggleVisible() {
         water.restart(at:ProcessInfo.processInfo.systemUptime); dismissGrid(); dismissWaterCard();desktop?.interrupt();chat?.hideDesktop()
         studio.suspendHouse(panel.isVisible)
         if panel.isVisible { panel.orderOut(nil); stopWalking() } else { panel.orderFrontRegardless(); greet() }
+        updateAnimationTimer()
         refreshMenu()
     }
     @objc func resize(_ item: NSMenuItem) {
@@ -655,21 +845,23 @@ final class PetController: NSObject, NSApplicationDelegate {
             if let screen = NSScreen.main { workScreenID = screenID(screen); UserDefaults.standard.set(workScreenID, forKey:"workScreenID") }
             applyWorkArea(center:true)
         } else if let area = NSScreen.main?.visibleFrame { move(to: NSPoint(x: area.maxX-panel.frame.width-40, y: area.minY+10)) }
-        panel.orderFrontRegardless(); savePosition(); refreshMenu()
+        panel.orderFrontRegardless(); updateAnimationTimer(); savePosition(); refreshMenu()
     }
     @objc func showHelp() {
-        let alert = NSAlert(); alert.messageText = "溯溯 · 桌面版 2.3"
-        alert.informativeText = "点击：溯溯回应你\n拖动：在桌面自由摆放，可部分移出屏幕\n右键或菜单栏爪印：左右散步、伸个懒腰、玩耍一下、跑一圈、自由活动、大小、安静模式与退出\n\n自由活动默认开启，以左右慢走为主，偶尔伸懒腰、玩耍或跑步。始终保留一小块身体在屏幕内；选择‘回到主屏幕’可以找回。安静模式会停止摇尾巴与其他动作。\n\n工作模式：屏幕分成 4×4 共 16 格，可选择地盘与显示器；宠物会自动缩小并完整留在该格内。每 30 分钟提醒喝水，可改为 15、45、60 分钟。提醒卡片持续显示，点击‘喝过了’后重新计时，或选‘5 分钟后提醒’。菜单可立即体验。隐藏、安静与屏幕休眠时暂停提醒，恢复后重新计时。\n\n本机运行，无需联网或账号。"
+        let alert = NSAlert(); alert.messageText = "溯溯 · 桌面版 \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")"
+        alert.informativeText = "点击：溯溯回应你\n双击：在溯溯身边聊天\n拖动：在桌面自由摆放，可部分移出屏幕\n右键或菜单栏爪印：按陪伴互动、吃喝与小窝、玩耍与行动、学习与信件、造型与合影、工作与提醒、设置与存档分类。进入对应子菜单即可操作\n\n自由活动默认开启，以左右慢走为主，偶尔伸懒腰、玩耍或跑步。始终保留一小块身体在屏幕内；选择‘回到主屏幕’可以找回。安静模式会停止摇尾巴与其他动作。\n\n工作模式：屏幕分成 4×4 共 16 格，可选择地盘与显示器；宠物会自动缩小并完整留在该格内。每 30 分钟提醒喝水，可改为 15、45、60 分钟。提醒卡片持续显示，点击‘喝过了’后重新计时，或选‘5 分钟后提醒’。菜单可立即体验。隐藏、安静与屏幕休眠时暂停提醒，恢复后重新计时。\n\n本地简答无需联网。可在聊天气泡中设置大模型。"
         alert.addButton(withTitle: "知道啦"); alert.runModal()
     }
     @objc func screenChanged() { dismissGrid(); applyWorkArea(); positionWaterCard(); refreshMenu() }
     @objc func sleeping() {
         suspended = true; stopWalking(); dismissGrid(); dismissWaterCard(); refreshMenu()
+        updateAnimationTimer()
         studio?.pauseHouse(true)
         _ = water.poll(at:ProcessInfo.processInfo.systemUptime,active:false)
     }
     @objc func waking() {
         suspended = false; lastTick = ProcessInfo.processInfo.systemUptime
+        updateAnimationTimer()
         water.restart(at:lastTick);studio?.pauseHouse(quiet)
     }
     private func performCue(_ names: [String]) -> Bool {
@@ -694,6 +886,7 @@ final class PetController: NSObject, NSApplicationDelegate {
             studio?.refreshState()
             studio?.pauseHouse(quiet || suspended)
             studio?.updateNestArea()
+            chat?.repositionDesktop()
             pet.letterWaiting = !store.unreadLetters.isEmpty
             pet.needsDisplay = true
             if changed { activities?.refreshDelivery() }
@@ -702,13 +895,51 @@ final class PetController: NSObject, NSApplicationDelegate {
         }
     }
     @objc func showStudio() {stopWalking();studio.showHouse()}
-    @objc func showChat() {stopWalking();chat.show()}
+    @objc func showChat() {
+        if !panel.isVisible { toggleVisible() }
+        stopWalking()
+        desktop.interrupt()
+        pet.greetingAge = pet.greetingDuration
+        greetingStart = -Double.infinity
+        pet.needsDisplay = true
+        chat.showDesktop()
+    }
     @objc func showActivities() {studio.releaseFox();desktop.cues()}
     @objc func showExpedition() {desktop.expedition()}
     @objc func showLetters() {desktop.letters()}
     @objc func showRoom() {studio.releaseFox();desktop.game()}
     @objc func showFoodRoom() {studio.releaseFox();desktop.food()}
-    @objc func showTaskRoom() {desktop.task(room.taskDetail)}
+    @objc func showTaskRoom() {
+        if !panel.isVisible { toggleVisible() }
+        taskBoard.show(watched: room.taskDetail)
+    }
+
+    @objc private func chooseAutoDismissal(_ item: NSMenuItem) {
+        guard DesktopDismissal.choices.contains(item.tag) else { return }
+        UserDefaults.standard.set(item.tag, forKey: DesktopDismissal.key)
+        refreshMenu()
+    }
+
+    private func pollTaskReminders() {
+        defer { refreshTaskBadge() }
+        guard panel?.isVisible == true, !quiet, !suspended else { return }
+        do {
+            let reminders = try store.deliverTaskReminders()
+            if let first = reminders.first {
+                let suffix = reminders.count > 1 ? "等 \(reminders.count) 条待办" : ""
+                greet(text: "待办提醒 · \(first.title)\(suffix)", duration: 8)
+                taskBoard.refreshPlans()
+            }
+        } catch {
+            taskBoard.refreshWatcher("待办提醒暂未保存，溯溯会重试。")
+        }
+    }
+
+    private func refreshTaskBadge() {
+        let hasReminder = store.save.plannedTasks.contains { $0.remindedAt != nil && $0.completedAt == nil }
+        let icon = taskRunning || !hasReminder ? watchedTaskBadge : "🔔"
+        if pet.taskBadge != icon { pet.taskBadge = icon; pet.needsDisplay = true }
+    }
     @objc func showCards(){desktop.cards()}
     @objc func showJournal(){desktop.journal()}
     @objc func showArchive(){desktop.archive()}
@@ -720,6 +951,11 @@ final class PetController: NSObject, NSApplicationDelegate {
     @objc func houseSize(_ item:NSMenuItem){studio.resizeHouse(CGFloat(item.tag))}
     @objc func showCloseup(){studio.releaseFox();stopWalking();desktop.present(studio.desktopCloseup(feedback:{[weak self] in self?.greet(text:$0)}),glass:false);pet.zoomHidden=true;pet.needsDisplay=true}
     @objc func showPhoto(){desktop.present(studio.desktopPhotoView())}
+    @objc func changeSeason(_ item:NSMenuItem) {
+        guard (0...4).contains(item.tag) else{return}
+        studio.selectScarf(item.tag==4 ? "none" : PetSeason.allCases[item.tag].rawValue)
+        move(to:panel.frame.origin);refreshMenu()
+    }
     @objc func changeScarf(_ item:NSMenuItem){let ids=["none","teal","amber","rose"]+store.save.studio.packs.map{$0.id.uuidString};guard ids.indices.contains(item.tag) else{return};studio.selectScarf(ids[item.tag]);refreshMenu()}
     @objc func changeLook(_ item:NSMenuItem){studio.useLook(item.tag);refreshMenu()}
     @objc func deleteLook(_ item:NSMenuItem){studio.deleteDesktopLook(item.tag);refreshMenu()}
@@ -731,142 +967,213 @@ final class PetController: NSObject, NSApplicationDelegate {
     @objc func exportScarf(){studio.exportDesktopTemplate()}
     func receiveFood(_ index:Int) {room.feed(index);greet(text:"收到点心啦！")}
     private func pollTasks() {
-        let events=store.taskEvents().sorted { $0.date < $1.date }
-        guard var event=events.last else { return }
-        if event.status=="running", kill(event.pid,0) != 0, errno == ESRCH {
-            event = TaskEvent(id:event.id,name:event.name,status:"cancelled",pid:event.pid,date:event.date,exitCode:nil)
+        let events: [TaskEvent]
+        do { events = try store.pollTaskEvents() }
+        catch {
+            room.refreshTask("任务结果暂未保存。\(error.localizedDescription)")
+            return
         }
-        let key=event.id+event.status
+        let running = events.filter { $0.status == "running" }.max { $0.date < $1.date }
+        taskRunning = running != nil
+        guard let event = running ?? store.save.lastTask else {
+            if !taskState.isEmpty {
+                taskState = ""
+                watchedTaskBadge = ""
+                refreshTaskBadge()
+                room.refreshTask("还没有交办任务。")
+                taskBoard.refreshWatcher(room.taskDetail)
+            }
+            return
+        }
+        let key = "\(event.id):\(event.status)"
         guard key != taskState else { return }
-        taskState=key;taskRunning=event.status=="running"
-        if !taskRunning && store.save.handledTasks.contains(event.id) { return }
-        let text:String
+        taskState = key
+        let text: String
         switch event.status {
-        case "running": text="等待中";pet.taskBadge="⌛";stopWalking()
-        case "success": text="任务完成";pet.taskBadge="🍃"
-        case "cancelled": text="已取消";pet.taskBadge="↩"
-        default: text="任务失败";pet.taskBadge="❗"
+        case "running": text="等待中";watchedTaskBadge="⌛";stopWalking()
+        case "success": text="任务完成";watchedTaskBadge="🍃"
+        case "cancelled": text="已取消";watchedTaskBadge="↩"
+        default: text="任务失败";watchedTaskBadge="❗"
         }
-        if !taskRunning {
-            do { try store.handleTask(event) } catch { taskState="" }
-            greet(text:text)
+        if !taskRunning, panel.isVisible, events.contains(where: { $0.id == event.id && $0.status == event.status }) {
+            greet(text: text)
         }
         room.refreshTask("\(text) · \(event.name)\n退出码 \(event.exitCode.map(String.init) ?? "—")")
-        pet.needsDisplay=true
+        taskBoard.refreshWatcher(room.taskDetail)
+        refreshTaskBadge()
     }
     @objc func quit() { NSApp.terminate(nil) }
     private func refreshMenu() {
         status.button?.image = NSImage(systemSymbolName:reminderVisible ? "drop.fill" : "pawprint.fill",accessibilityDescription:reminderVisible ? "溯溯提醒你喝水" : "溯溯")
         status.button?.toolTip = reminderVisible ? "该喝水啦 · 点击菜单或提醒卡片处理" : "溯溯 · 桌面小伙伴"
-        status.menu = makeMenu()
+        statusMenuDirty = true
+        pinnedControls?.refresh()
     }
-    func makeMenu() -> NSMenu {
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        guard menu === statusMenu, statusMenuDirty, !trackingStatusMenu else { return }
+        let updated = makeMenu()
+        menu.removeAllItems()
+        for item in updated.items {
+            updated.removeItem(item)
+            menu.addItem(item)
+        }
+        statusMenuDirty = false
+    }
+    func menuWillOpen(_ menu: NSMenu) { if menu === statusMenu { trackingStatusMenu = true } }
+    func menuDidClose(_ menu: NSMenu) { if menu === statusMenu { trackingStatusMenu = false } }
+    func makeMenu(includePin: Bool = true) -> NSMenu {
         let menu = NSMenu()
-        func item(_ title: String, _ action: Selector, checked: Bool? = nil) {
-            let entry = NSMenuItem(title: title, action: action, keyEquivalent: ""); entry.target = self
-            if let checked { entry.state = checked ? .on : .off }; menu.addItem(entry)
+        menu.autoenablesItems = false
+        @discardableResult
+        func item(_ parent:NSMenu,_ title:String,_ action:Selector,checked:Bool?=nil,tag:Int=0,enabled:Bool=true)->NSMenuItem {
+            let entry=NSMenuItem(title:title,action:action,keyEquivalent:"")
+            entry.target=self;entry.tag=tag;entry.isEnabled=enabled
+            if let checked {entry.state=checked ? .on : .off}
+            parent.addItem(entry);return entry
         }
-        let name = NSMenuItem(title: "溯溯 · 陪你慢慢来", action: nil, keyEquivalent: ""); name.isEnabled = false; menu.addItem(name)
-        menu.addItem(.separator())
-        let house=NSMenuItem(title:"小房子",action:nil,keyEquivalent:"")
-        let houseMenu=NSMenu()
-        for (title,selector) in [("摆出小房子",#selector(showStudio)),("拿出垫子休息",#selector(restAtHouse)),("收垫子回屋",#selector(storeMat)),("出来走走",#selector(leaveHouse)),("收起小房子",#selector(hideHouse))] {
-            let entry=NSMenuItem(title:title,action:selector,keyEquivalent:"");entry.target=self;houseMenu.addItem(entry)
+        func group(_ parent:NSMenu,_ title:String)->NSMenu {
+            let entry=NSMenuItem(title:title,action:nil,keyEquivalent:"")
+            let submenu=NSMenu(title:title);submenu.autoenablesItems=false
+            entry.submenu=submenu;parent.addItem(entry);return submenu
         }
-        for width in [360,520,640] {let entry=NSMenuItem(title:"房子大小 \(width)",action:#selector(houseSize(_:)),keyEquivalent:"");entry.target=self;entry.tag=width;houseMenu.addItem(entry)}
-        house.submenu=houseMenu;menu.addItem(house)
-        item("喂点心",#selector(showFoodRoom))
-        item("两盘选口味",#selector(compareFood))
-        item("藏松果",#selector(showRoom))
-        item("听暗号 / 教暗号",#selector(showActivities))
-        item("去探险",#selector(showExpedition))
-        item("抽认卡",#selector(showCards))
-        item("信箱 / 留一封信",#selector(showLetters))
-        item("和溯溯聊天",#selector(showChat))
-        item("近看互动",#selector(showCloseup))
-        item("近看互动静音",#selector(toggleCloseupSound),checked:studio.closeupMuted)
-        item("合影明信片",#selector(showPhoto))
-        let clothes=NSMenuItem(title:"换围巾",action:nil,keyEquivalent:"")
-        let clothesMenu=NSMenu()
-        let ids=["none","teal","amber","rose"]+store.save.studio.packs.map{$0.id.uuidString}
-        for (index,name) in (["不戴围巾","湖绿","琥珀","莓红"]+store.save.studio.packs.map(\.name)).enumerated() {
-            let entry=NSMenuItem(title:name,action:#selector(changeScarf(_:)),keyEquivalent:"");entry.target=self;entry.tag=index;entry.state=store.save.studio.scarf==ids[index] ? .on : .off;clothesMenu.addItem(entry)
+        let name=NSMenuItem(title:"点空白关闭 · 右键或爪印重开",action:nil,keyEquivalent:"")
+        name.isEnabled=false;menu.addItem(name);menu.addItem(.separator())
+        if includePin {
+            let visible = pinnedControls?.isVisible == true
+            let pin = item(menu, visible ? "关闭固定菜单" : "固定菜单到桌面…", #selector(togglePinnedControls))
+            pin.image = NSImage(systemSymbolName: visible ? "pin.slash" : "pin", accessibilityDescription: nil)
+            pin.toolTip = "固定后，点击桌面其他地方也会保留。"
+            menu.addItem(.separator())
         }
-        for (index,look) in store.save.studio.looks.enumerated() {let entry=NSMenuItem(title:"造型 · \(look.name)",action:#selector(changeLook(_:)),keyEquivalent:"");entry.target=self;entry.tag=index;clothesMenu.addItem(entry)}
-        for (title,selector) in [("保存当前造型",#selector(saveLook)),("导入配饰…",#selector(importScarf)),("导出配饰模板…",#selector(exportScarf))] {let entry=NSMenuItem(title:title,action:selector,keyEquivalent:"");entry.target=self;clothesMenu.addItem(entry)}
-        if !store.save.studio.looks.isEmpty {
-            let entry=NSMenuItem(title:"删除造型",action:nil,keyEquivalent:""),choices=NSMenu()
-            for (index,look) in store.save.studio.looks.enumerated(){let choice=NSMenuItem(title:look.name,action:#selector(deleteLook(_:)),keyEquivalent:"");choice.tag=index;choice.target=self;choices.addItem(choice)}
-            entry.submenu=choices;clothesMenu.addItem(entry)
+
+        let companion=group(menu,"陪伴互动")
+        item(companion,"打个招呼",#selector(sayHello))
+        item(companion,"和溯溯聊天",#selector(showChat))
+        item(companion,"近看互动",#selector(showCloseup))
+        companion.addItem(.separator())
+        item(companion,"近看互动静音",#selector(toggleCloseupSound),checked:studio.closeupMuted)
+
+        let home=group(menu,"吃喝与小窝")
+        item(home,"喂点心",#selector(showFoodRoom))
+        item(home,"两盘选口味",#selector(compareFood))
+        home.addItem(.separator())
+        item(home,"回窝拿毯子休息",#selector(restAtHouse))
+        item(home,"收毯子回屋",#selector(storeMat))
+        item(home,"结束休息，出来走走",#selector(leaveHouse))
+        let houseSizes=group(home,"小窝大小")
+        for (label,width) in [("小",320),("中",440),("大",560)] {
+            item(houseSizes,label,#selector(houseSize(_:)),tag:width)
         }
+
+        let play=group(menu,"玩耍与行动")
+        item(play,"藏松果",#selector(showRoom))
+        item(play,"去探险",#selector(showExpedition))
+        play.addItem(.separator())
+        item(play,"左右散步",#selector(walkOnce))
+        item(play,"跑一圈",#selector(runOnce))
+        item(play,"伸个懒腰",#selector(stretchOnce))
+        item(play,"玩耍一下",#selector(playOnce))
+        play.addItem(.separator())
+        item(play,"自由活动",#selector(toggleAuto),checked:autoWalk)
+
+        let learning=group(menu,"学习与信件")
+        item(learning,"听暗号 / 教暗号",#selector(showActivities))
+        item(learning,"抽认卡",#selector(showCards))
+        item(learning,"信箱 / 留一封信",#selector(showLetters))
+        item(learning,"手帐",#selector(showJournal))
+
+        let appearance=group(menu,"造型与合影")
+        let seasons=group(appearance,"季节外观")
+        for (index,season) in PetSeason.allCases.enumerated() {
+            item(seasons,season.title,#selector(changeSeason(_:)),checked:store.save.studio.season==season,tag:index)
+        }
+        seasons.addItem(.separator())
+        item(seasons,"原始外观",#selector(changeSeason(_:)),checked:store.save.studio.scarf=="none",tag:4)
         if !store.save.studio.packs.isEmpty {
-            let entry=NSMenuItem(title:"删除导入的配饰",action:nil,keyEquivalent:""),choices=NSMenu()
-            for (index,pack) in store.save.studio.packs.enumerated(){let choice=NSMenuItem(title:pack.name,action:#selector(deleteScarf(_:)),keyEquivalent:"");choice.tag=index;choice.target=self;choices.addItem(choice)}
-            entry.submenu=choices;clothesMenu.addItem(entry)
-        }
-        clothes.submenu=clothesMenu;menu.addItem(clothes)
-        item("手帐",#selector(showJournal))
-        item("存档备份 / 迁移",#selector(showArchive))
-        item("任务报信",#selector(showTaskRoom))
-        item("收起当前道具 / 气泡",#selector(dismissDesktopProps))
-        item("打个招呼", #selector(sayHello))
-        item("喝水提醒（立即体验）", #selector(previewWater))
-        item("左右散步", #selector(walkOnce))
-        item("伸个懒腰", #selector(stretchOnce))
-        item("玩耍一下", #selector(playOnce))
-        item("跑一圈", #selector(runOnce))
-        item("自由活动", #selector(toggleAuto), checked: autoWalk)
-        item("工作模式", #selector(toggleWork), checked: workMode)
-        let work = NSMenuItem(title: "工作模式设置", action:nil,keyEquivalent:"")
-        let settings = NSMenu()
-        let territories = NSMenuItem(title:"地盘：第 \(territory+1) 格（从左上按行编号）",action:nil,keyEquivalent:"")
-        let cells = NSMenu()
-        for row in 0..<4 {
-            let rowItem = NSMenuItem(title:"第 \(row+1) 行",action:nil,keyEquivalent:"")
-            let columns = NSMenu()
-            for column in 0..<4 {
-                let index = row*4+column
-                let entry = NSMenuItem(title:"第 \(column+1) 列 · \(index+1) 号地盘",action:#selector(chooseTerritory(_:)),keyEquivalent:"")
-                entry.target = self; entry.tag = index; entry.state = territory == index ? .on : .off
-                entry.isEnabled = workMode; columns.addItem(entry)
+            let packs=group(appearance,"导入的配饰")
+            for (index,pack) in store.save.studio.packs.enumerated() {
+                item(packs,pack.name,#selector(changeScarf(_:)),checked:store.save.studio.scarf==pack.id.uuidString,tag:index+4)
             }
-            rowItem.submenu = columns; cells.addItem(rowItem)
         }
-        territories.submenu = cells; settings.addItem(territories)
-        let displays = NSMenuItem(title:"工作屏幕",action:nil,keyEquivalent:"")
-        let screenMenu = NSMenu()
+        let looks=group(appearance,"保存与管理造型")
+        item(looks,"保存当前造型",#selector(saveLook))
+        if !store.save.studio.looks.isEmpty {
+            let saved=group(looks,"穿戴已保存造型")
+            let remove=group(looks,"删除造型")
+            for (index,look) in store.save.studio.looks.enumerated() {
+                item(saved,look.name,#selector(changeLook(_:)),tag:index)
+                item(remove,look.name,#selector(deleteLook(_:)),tag:index)
+            }
+        }
+        looks.addItem(.separator())
+        item(looks,"导入配饰…",#selector(importScarf))
+        item(looks,"导出配饰模板…",#selector(exportScarf))
+        if !store.save.studio.packs.isEmpty {
+            let remove=group(looks,"删除导入的配饰")
+            for (index,pack) in store.save.studio.packs.enumerated() {
+                item(remove,pack.name,#selector(deleteScarf(_:)),tag:index)
+            }
+        }
+        item(appearance,"合影明信片",#selector(showPhoto))
+        let sizes=group(appearance,"溯溯大小")
+        for (label,width) in [("小",160),("中",208),("大",272)] {
+            item(sizes,label,#selector(resize(_:)),checked:Int(scale)==width,tag:width)
+        }
+
+        let work=group(menu,"工作与提醒")
+        item(work,"工作模式",#selector(toggleWork),checked:workMode)
+        item(work,"任务报信",#selector(showTaskRoom))
+        work.addItem(.separator())
+        let cells=group(work,"选择地盘")
+        for row in 0..<4 {
+            if row > 0 { cells.addItem(.separator()) }
+            for column in 0..<4 {
+                let index=row*4+column
+                item(cells,"\(index+1) 号 · 第 \(row+1) 行第 \(column+1) 列",#selector(chooseTerritory(_:)),checked:territory==index,tag:index,enabled:workMode)
+            }
+        }
+        let displays=group(work,"工作屏幕")
         for screen in NSScreen.screens {
-            let entry = NSMenuItem(title:screen.localizedName,action:#selector(chooseScreen(_:)),keyEquivalent:"")
-            entry.target = self; entry.tag = screenID(screen); entry.state = workScreen === screen ? .on : .off
-            entry.isEnabled = workMode; screenMenu.addItem(entry)
+            item(displays,screen.localizedName,#selector(chooseScreen(_:)),checked:workScreen===screen,tag:screenID(screen),enabled:workMode)
         }
-        displays.submenu = screenMenu; settings.addItem(displays)
-        let reminder = NSMenuItem(title:"喝水间隔",action:nil,keyEquivalent:"")
-        let intervals = NSMenu()
+        item(work,"显示地盘网格（3 秒）",#selector(showGrid),enabled:workMode)
+        work.addItem(.separator())
+        let intervals=group(work,"喝水间隔")
         for minutes in [15,30,45,60] {
-            let entry = NSMenuItem(title:"每 \(minutes) 分钟",action:#selector(chooseWaterInterval(_:)),keyEquivalent:"")
-            entry.target = self; entry.tag = minutes; entry.state = Int(water.interval) == minutes*60 ? .on : .off
-            intervals.addItem(entry)
+            item(intervals,"每 \(minutes) 分钟",#selector(chooseWaterInterval(_:)),checked:Int(water.interval)==minutes*60,tag:minutes)
         }
-        reminder.submenu = intervals; settings.addItem(reminder)
-        for (title, action) in [("显示地盘网格（3 秒）",#selector(showGrid)),("试试喝水提醒",#selector(previewWater))] {
-            let entry = NSMenuItem(title:title,action:action,keyEquivalent:""); entry.target = self; entry.isEnabled = workMode
-            settings.addItem(entry)
+        item(work,"喝水提醒（立即体验）",#selector(previewWater))
+        item(work,"喝水提醒附带回应气泡",#selector(toggleWaterSpeech),checked:waterSpeech)
+        if reminderVisible {
+            item(work,"喝过了 ✓",#selector(waterDone))
+            item(work,"5 分钟后提醒",#selector(waterLater))
         }
-        work.submenu = settings; menu.addItem(work)
-        item("安静模式", #selector(toggleQuiet), checked: quiet)
-        let sizes = NSMenuItem(title: "大小", action: nil, keyEquivalent: "")
-        let submenu = NSMenu()
-        for (label, width) in [("小",160),("中",208),("大",272)] {
-            let entry = NSMenuItem(title: label, action: #selector(resize(_:)), keyEquivalent: "")
-            entry.tag = width; entry.target = self; entry.state = Int(scale) == width ? .on : .off; submenu.addItem(entry)
+
+        let settings=group(menu,"设置与存档")
+        item(settings,"安静模式",#selector(toggleQuiet),checked:quiet)
+        item(settings,"回到主屏幕",#selector(resetPosition))
+        let dismissal = group(settings, "道具 / 气泡自动收起")
+        for seconds in DesktopDismissal.choices {
+            item(dismissal, seconds == 0 ? "手动收起" : "\(seconds) 秒", #selector(chooseAutoDismissal(_:)),
+                 checked: DesktopDismissal.seconds == seconds, tag: seconds)
         }
-        sizes.submenu = submenu; menu.addItem(sizes)
-        item(panel?.isVisible == false ? "显示溯溯" : "暂时隐藏", #selector(toggleVisible))
-        item("回到主屏幕", #selector(resetPosition))
+        let bubble = group(settings, "回应气泡")
+        let palette = group(bubble, "背景颜色")
+        for theme in SpeechBubbleStyle.Theme.allCases {
+            item(palette, theme.title, #selector(chooseBubbleTheme(_:)), checked: pet.speechStyle.theme == theme, tag: theme.rawValue)
+        }
+        let textSizes = group(bubble, "文字大小")
+        for (index, points) in SpeechBubbleStyle.textSizes.enumerated() {
+            item(textSizes, "\(["小", "中", "大"][index]) · \(points) pt", #selector(chooseBubbleSize(_:)), checked: pet.speechStyle.sizeIndex == index, tag: index)
+        }
+        settings.addItem(.separator())
+        item(settings,"存档备份 / 迁移",#selector(showArchive))
+        item(settings,"使用说明",#selector(showHelp))
+
         menu.addItem(.separator())
-        item("使用说明", #selector(showHelp))
-        item("退出溯溯", #selector(quit))
+        item(menu,"收起道具 / 气泡",#selector(dismissDesktopProps))
+        item(menu,panel?.isVisible==false ? "显示溯溯" : "暂时隐藏",#selector(toggleVisible))
+        item(menu,"退出溯溯",#selector(quit))
         return menu
     }
 
@@ -881,6 +1188,38 @@ final class PetController: NSObject, NSApplicationDelegate {
         defer { workMode = savedWorkMode; applyWorkArea() }
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let retiredTitles = ["林间小屋", "新的共同经历", "生活工坊"]
+            precondition(!NSApp.windows.contains { window in retiredTitles.contains(where: { window.title.contains($0) }) })
+            precondition(chat.window == nil)
+            let suiteName = "Susu.smoke." + UUID().uuidString
+            let prefs = UserDefaults(suiteName: suiteName)!
+            prefs.set(false, forKey: "autoWalk")
+            prefs.set(true, forKey: "houseShown")
+            precondition(!DesktopPreferences.migrate(prefs) && prefs.object(forKey: "autoWalk") == nil && prefs.object(forKey: "houseShown") == nil)
+            prefs.set(true, forKey: "freeRoam")
+            prefs.set(false, forKey: "autoWalk")
+            precondition(DesktopPreferences.migrate(prefs))
+            prefs.removePersistentDomain(forName: suiteName)
+            toggleVisible()
+            precondition(!panel.isVisible && animationTimer == nil && activityTimer?.isValid == true)
+            toggleVisible()
+            precondition(panel.isVisible && animationTimer?.isValid == true)
+            let bitmap = frames.walkPixels[0]
+            for y in stride(from: 0, to: bitmap.pixelsHigh, by: 5) {
+                for x in stride(from: 0, to: bitmap.pixelsWide, by: 5) {
+                    let reference = (bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.12
+                    precondition(AlphaHitMask.hit(bitmap: bitmap, x: x, y: y, threshold: 0.12) == reference,
+                                 "Alpha mask must preserve logical orientation and transparency")
+                }
+            }
+            print("PASS: legacy preference migration, hidden-window animation pause and alpha-mask equivalence.")
+            togglePinnedControls()
+            let pinPanel = NSApp.windows.first { $0.title == "溯溯的操作菜单" && $0.isVisible } as? NSPanel
+            precondition(pinPanel?.hidesOnDeactivate == false && pinnedControls?.isVisible == true)
+            precondition(makeMenu().item(withTitle: "关闭固定菜单") != nil)
+            togglePinnedControls()
+            precondition(pinnedControls == nil && makeMenu().item(withTitle: "固定菜单到桌面…") != nil)
+            print("PASS: no retired startup windows; menu pins to a persistent panel and closes from the regular menu.")
             for (name, walk, run, left, frame) in [("idle",false,false,false,0),("tail-low",false,false,false,2),("walk-right",true,false,false,2),("walk-left",true,false,true,2),("run-right",true,true,false,2),("run-left",true,true,true,2)] {
                 pet.walking = walk; pet.running = run; pet.facesLeft = left; pet.frameIndex = frame; pet.greetingAge = 100; pet.transitionAge = 10
                 guard let rep = pet.bitmapImageRepForCachingDisplay(in: pet.bounds) else { fatalError("Preview bitmap unavailable") }
@@ -909,13 +1248,13 @@ final class PetController: NSObject, NSApplicationDelegate {
             let screens = NSScreen.screens.map(\.visibleFrame)
             let sprite = NSSize(width:panel.frame.width,height:panel.frame.width*208/192)
             for p in [NSPoint(x:-100000,y:-100000), NSPoint(x:100000,y:-100000), NSPoint(x:-100000,y:100000), NSPoint(x:100000,y:100000)] {
-                let expected = DesktopBounds.constrain(p,sprite:sprite,core:frames.safetyCore,screens:screens)
+                let expected = DesktopBounds.constrain(p,sprite:sprite,core:pet.currentSafetyCore,screens:screens)
                 move(to:p)
                 let actual = panel.frame.origin
                 guard abs(actual.x-expected.x)<=1 && abs(actual.y-expected.y)<=1 else {
                     throw NSError(domain:"SusuBoundary",code:1,userInfo:[NSLocalizedDescriptionKey:"Native window clamp: expected \(expected), actual \(actual)"])
                 }
-                let core = frames.safetyCore
+                let core = pet.currentSafetyCore
                 let body = NSRect(x:panel.frame.minX+core.minX*sprite.width,y:panel.frame.minY+core.minY*sprite.height,width:core.width*sprite.width,height:core.height*sprite.height)
                 let keep = min(20,min(body.width,body.height))
                 guard screens.contains(where: { let visible = $0.intersection(body); return visible.width >= keep-0.1 && visible.height >= keep-0.1 }) else {
@@ -1017,7 +1356,8 @@ final class PetController: NSObject, NSApplicationDelegate {
             dismissGrid();panel.orderFrontRegardless();workMode=false
             for (command,badge) in [("/usr/bin/true","🍃"),("/usr/bin/false","❗")] {
                 let process=Process()
-                process.executableURL=Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/susu")
+                guard let taskExecutable = TaskTool.executable else { fatalError(TaskTool.unavailable) }
+                process.executableURL = taskExecutable
                 process.arguments=["--data-dir",store.directory.path,"watch","--",command]
                 try process.run();process.waitUntilExit();pollTasks()
                 precondition(pet.taskBadge==badge && !store.save.handledTasks.isEmpty)
@@ -1044,16 +1384,73 @@ final class PetController: NSObject, NSApplicationDelegate {
             print("PASS: 2.1 four activity pages; ordered cue playback, completion, interrupt and quiet-state guard.")
             quiet=false
             try studio.runChecks(at:directory)
+            showChat()
+            precondition(chat.isDesktopChatVisible && chat.window == nil)
             try chat.runChecks(at:directory)
+            try taskBoard.runChecks(at: directory)
+            desktop.interrupt()
             try desktop.runChecks(at:directory)
+            try checkSeasonArt(at:directory)
             print("PASS: 2.2 studio pages, scarf template import/validation, postcard export and closeup sequence.")
-            print("PASS: 2.3 borderless desktop house; taking out, resting, packing and staying indoors; interrupted outing sequences; transparent input and desktop props.")
+            print("PASS: Borderless desktop house, transparent input, scarf template import and desktop prop regression.")
+            print("PASS: 2.4 on-demand house stays hidden before rest and after packing/exit; integrated carrying and paw/blanket poses; seven interrupted packing paths and full lifecycle.")
+            print("PASS: four seasonal whole-character outfits; all 56 frames loaded; native idle/right/left drawing and alpha hit testing; season-specific visible body patch.")
             print("Previews: \(directory.path)")
         } catch { fputs("Smoke test failed: \(error)\n", stderr); exit(1) }
         NSApp.terminate(nil)
     }
 
-    func applicationWillTerminate(_ notification: Notification) { timer?.invalidate(); savePosition() }
+    private func checkSeasonArt(at directory:URL)throws {
+        let preview=PetView(frame:NSRect(x:0,y:0,width:192,height:260));preview.frames=frames
+        for season in PetSeason.allCases {
+            preview.scarfState.scarf=season.rawValue
+            for walking in [false,true] {
+                preview.walking=walking;preview.running=false;preview.action=nil
+                for left in walking ? [false,true] : [false] {
+                    preview.facesLeft=left
+                    for index in 0..<(walking ? 8 : 6) {
+                        preview.frameIndex=index
+                        let core=preview.currentSafetyCore
+                        let point=NSPoint(x:core.midX*preview.actorRect.width,y:core.midY*preview.actorRect.height)
+                        precondition(preview.containsPet(point),"Seasonal visible body patch must accept input, including mirrored walks")
+                        precondition(!preview.containsPet(NSPoint(x:1,y:259)))
+                        if index == (walking ? 2 : 0) {
+                            let rep=preview.bitmapImageRepForCachingDisplay(in:preview.bounds)!
+                            preview.cacheDisplay(in:preview.bounds,to:rep)
+                            let name="season-\(season.rawValue)-\(walking ? (left ? "left" : "right") : "idle").png"
+                            try rep.representation(using:.png,properties:[:])!.write(to:directory.appendingPathComponent(name))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private static func exportOutfitPreviews(_ artwork: SpriteFrames, to directory: URL) throws {
+        for season in PetSeason.allCases {
+            for pose in CharacterPose.allCases {
+                let folder = directory.appendingPathComponent("\(season.rawValue)/\(pose.rawValue)")
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                for index in 0..<pose.frameCount {
+                    let frame = artwork.character(pose, frame: index, season: season).pixels
+                    let filename = "\(season.rawValue)/\(pose.rawValue)/\(index)"
+                    guard let data = frame.representation(using: .png, properties: [:]),
+                          data != artwork.character(pose, frame: index, season: nil).pixels.representation(using: .png, properties: [:]),
+                          (frame.colorAt(x: 0, y: 0)?.alphaComponent ?? 1) == 0 else {
+                        throw NSError(domain: "SusuPreview", code: 2, userInfo: [NSLocalizedDescriptionKey: "预览帧无效：\(filename)"])
+                    }
+                    try data.write(to: folder.appendingPathComponent(String(format: "%02d.png", index)))
+                }
+            }
+        }
+        print("Rendered all \(PetSeason.allCases.count * CharacterPose.allCases.map(\.frameCount).reduce(0, +)) seasonal frames in \(directory.path)")
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        animationTimer?.invalidate()
+        activityTimer?.invalidate()
+        savePosition()
+    }
 }
 
 let app = NSApplication.shared

@@ -41,9 +41,9 @@ enum WorkTerritory {
                       y: screen.maxY - CGFloat(index / 4 + 1) * h, width: w, height: h)
     }
 
-    static func width(preferred: CGFloat, area: NSRect) -> CGFloat {
+    static func width(preferred: CGFloat, area: NSRect, bubbleHeight: CGFloat = 52) -> CGFloat {
         // Reserve room for the speech bubble and rounding at the cell edges.
-        max(1, min(preferred, area.width - 8, (area.height - 60) * 192 / 208))
+        max(1, min(preferred, area.width - 8, (area.height - bubbleHeight - 8) * 192 / 208))
     }
 
     static func constrain(_ point: NSPoint, window: NSSize, area: NSRect) -> NSPoint {

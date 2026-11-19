@@ -1,5 +1,16 @@
 import Foundation
 
+enum PetSeason:String,CaseIterable {
+    case spring,summer,autumn,winter
+    var title:String {
+        switch self {
+        case .spring:return "春 · 花叶胸饰"
+        case .summer:return "夏 · 海蓝水手领"
+        case .autumn:return "秋 · 枫叶小挎包"
+        case .winter:return "冬 · 针织围巾"
+        }
+    }
+}
 struct FurniturePosition: Codable {
     var x: Double
     var y: Double
@@ -22,6 +33,11 @@ struct StudioState: Codable {
         "lamp":FurniturePosition(x:0.80,y:0.49)
     ]
     var scarf = "none"
+    var season:PetSeason? {
+        // Old built-in scarf selections are winter outfits; preserve saved IDs.
+        if ["teal","amber","rose"].contains(scarf){return .winter}
+        return PetSeason(rawValue:scarf)
+    }
     var packs: [ScarfPack] = []
     var looks: [SavedLook] = []
     var chat = ChatState()
@@ -29,6 +45,14 @@ struct StudioState: Codable {
 
 extension CompanionStore {
     func saveStudio(_ state: StudioState) throws {
+        try validateStudio(state)
+        if PetSeason(rawValue:state.scarf) != nil {
+            let original=directory.appendingPathComponent("save.json")
+            let backup=directory.appendingPathComponent("save-before-seasons-backup.json")
+            if !FileManager.default.fileExists(atPath:backup.path),FileManager.default.fileExists(atPath:original.path) {
+                try FileManager.default.copyItem(at:original,to:backup)
+            }
+        }
         var next = save
         next.studio = state
         try commit(next)
@@ -41,7 +65,7 @@ extension CompanionStore {
         let packagesValid = state.packs.count<=8 && state.packs.allSatisfy {
             !$0.name.isEmpty && $0.name.count<=80 && $0.idle.count==6 && $0.walking.count==8
         } && allFrames.reduce(0,{$0+$1.count})<=4_000_000 && allFrames.allSatisfy(Self.validOverlayHeader)
-        let allowed = ["none","teal","amber","rose"] + state.packs.map{$0.id.uuidString}
+        let allowed = ["none","teal","amber","rose"] + PetSeason.allCases.map(\.rawValue) + state.packs.map{$0.id.uuidString}
         let looksValid = state.looks.count<=100 && state.looks.allSatisfy {
             !$0.name.isEmpty && $0.name.count<=80 && allowed.contains($0.scarf)
         }

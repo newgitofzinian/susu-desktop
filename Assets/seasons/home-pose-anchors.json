@@ -1,0 +1,20 @@
+{
+  "carry": [
+    {"back":[129,137],"throat":[178,144],"shoulder":[123,157],"flank":[108,171],"view":"side","occluders":[]},
+    {"back":[129,138],"throat":[178,145],"shoulder":[123,157],"flank":[109,171],"view":"side","occluders":[]},
+    {"back":[129,139],"throat":[178,146],"shoulder":[122,158],"flank":[108,172],"view":"side","occluders":[]},
+    {"back":[129,140],"throat":[177,147],"shoulder":[121,158],"flank":[107,173],"view":"side","occluders":[]},
+    {"back":[130,140],"throat":[176,148],"shoulder":[120,158],"flank":[106,172],"view":"side","occluders":[]},
+    {"back":[130,139],"throat":[177,146],"shoulder":[121,157],"flank":[108,171],"view":"side","occluders":[]},
+    {"back":[130,138],"throat":[178,145],"shoulder":[123,157],"flank":[109,170],"view":"side","occluders":[]},
+    {"back":[130,138],"throat":[178,145],"shoulder":[123,157],"flank":[110,170],"view":"side","occluders":[]}
+  ],
+  "blanket": [
+    {"back":[129,139],"throat":[178,145],"shoulder":[123,158],"flank":[109,172],"view":"side","occluders":[]},
+    {"back":[126,149],"throat":[166,173],"shoulder":[123,162],"flank":[105,164],"view":"side","occluders":[[149,148,214,151,224,173,202,185,180,175,167,170,155,166]]},
+    {"back":[126,157],"throat":[167,183],"shoulder":[123,169],"flank":[108,168],"view":"prone","occluders":[[142,141,207,152,222,185,180,193,168,183,151,179]]},
+    {"back":[124,157],"throat":[163,180],"shoulder":[121,173],"flank":[102,174],"view":"prone","occluders":[]},
+    {"back":[125,165],"throat":[162,182],"shoulder":[123,174],"flank":[111,163],"view":"prone","occluders":[[151,177,184,179,194,186,180,199,153,198,145,189]]},
+    {"back":[124,164],"throat":[150,181],"shoulder":[122,172],"flank":[106,161],"view":"prone","occluders":[[145,159,215,156,229,175,218,194,181,194,167,189,159,183]]}
+  ]
+}

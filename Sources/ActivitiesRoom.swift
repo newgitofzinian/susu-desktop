@@ -1,13 +1,11 @@
 import AppKit
 
-final class ActivitiesRoom: NSObject, NSWindowDelegate {
-    let window: NSWindow
+final class ActivitiesRoom: NSObject {
     let store: CompanionStore
     let frames: SpriteFrames
     var playCue: (([String]) -> Bool)?
-    var onVisibility: (() -> Void)?
     var onChange: (() -> Void)?
-    private let tabs: NSSegmentedControl
+    private var selectedTab=0
     private let body = NSView(frame:NSRect(x:24,y:22,width:592,height:380))
     private let status = NSTextField(wrappingLabelWithString:"")
     private var picker: NSPopUpButton?
@@ -25,31 +23,10 @@ final class ActivitiesRoom: NSObject, NSWindowDelegate {
     init(store: CompanionStore, frames: SpriteFrames) {
         self.store = store
         self.frames = frames
-        tabs = NSSegmentedControl(labels:["教暗号","林间探险","抽认卡","未来的信"],trackingMode:.selectOne,target:nil,action:nil)
-        window = RoomWindow(contentRect:NSRect(x:0,y:0,width:640,height:550),styleMask:[.titled,.closable,.miniaturizable],backing:.buffered,defer:false)
         super.init()
-        window.title = "溯溯 · 新的共同经历 2.2"
-        window.isReleasedWhenClosed = false
-        window.delegate = self
-        let root = NSView(frame:NSRect(x:0,y:0,width:640,height:550))
-        root.wantsLayer = true
-        root.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
-        window.contentView = root
-        label("把今天留给溯溯",rect:NSRect(x:24,y:496,width:590,height:36),size:24,parent:root)
-        tabs.frame = NSRect(x:24,y:448,width:592,height:32)
-        tabs.target = self
-        tabs.action = #selector(tabChanged)
-        tabs.selectedSegment = 0
-        root.addSubview(tabs)
-        status.frame = NSRect(x:24,y:407,width:592,height:30)
-        status.font = .systemFont(ofSize:14)
-        root.addSubview(status)
-        root.addSubview(body)
-        window.center()
-        render()
     }
     func desktopView(tab:Int)->NSView {
-        tabs.selectedSegment=tab
+        selectedTab=tab
         if tab==2,!store.save.activities.cards.isEmpty {selectedCard=store.nextCard()?.id;practicing=true;flipped=false}
         if tab==3,let unread=store.save.activities.letters.first(where:{$0.deliveredAt != nil && $0.readAt == nil}) {activeLetterID=unread.id}
         render()
@@ -58,14 +35,6 @@ final class ActivitiesRoom: NSObject, NSWindowDelegate {
         status.removeFromSuperview();status.frame=NSRect(x:10,y:390,width:572,height:30);wrapper.addSubview(status)
         return wrapper
     }
-    func show(tab: Int = 0) {
-        tabs.selectedSegment = tab
-        render()
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps:true)
-        onVisibility?()
-    }
-    func windowWillClose(_ notification: Notification) { onVisibility?() }
     @discardableResult private func label(_ text: String, rect: NSRect, size: CGFloat = 14, parent: NSView? = nil) -> NSTextField {
         let field = NSTextField(wrappingLabelWithString:text)
         field.font = .systemFont(ofSize:size,weight:size>20 ? .semibold : .regular)
@@ -106,10 +75,9 @@ final class ActivitiesRoom: NSObject, NSWindowDelegate {
             return false
         }
     }
-    @objc private func tabChanged() { render() }
     private func render() {
         body.subviews.forEach { $0.removeFromSuperview() }
-        switch tabs.selectedSegment {
+        switch selectedTab {
         case 0: renderCues()
         case 1: renderExpedition()
         case 2: renderCards()
@@ -151,6 +119,7 @@ final class ActivitiesRoom: NSObject, NSWindowDelegate {
     }
     @objc private func deleteCue() {
         guard let id = activeCueID else { return }
+        guard confirmDestructiveAction("删除这个暗号？",message:"删除后需要重新教它。") else{return}
         if attempt({ try store.deleteCue(id:id) }) { activeCueID=nil;render() }
     }
     @objc private func invokeCue() {
@@ -163,7 +132,7 @@ final class ActivitiesRoom: NSObject, NSWindowDelegate {
     private func renderExpedition() {
         status.stringValue = "去河岸捡石头，或去松林找松果。"
         let fox = NSImageView(frame:NSRect(x:220,y:205,width:150,height:162))
-        fox.image = store.save.activities.expedition == nil ? frames.idle[0] : frames.walk[2]
+        fox.image = store.save.activities.expedition == nil ? frames.character(.idle, frame: 0, season: store.save.studio.season).image : frames.character(.walk, frame: 2, season: store.save.studio.season).image
         fox.imageScaling = .scaleProportionallyUpOrDown
         body.addSubview(fox)
         if let trip = store.save.activities.expedition {
@@ -241,6 +210,7 @@ final class ActivitiesRoom: NSObject, NSWindowDelegate {
     }
     @objc private func deleteCard() {
         guard let id=selectedCard else{return}
+        guard confirmDestructiveAction("删除这张卡片？",message:"删除后无法恢复。") else{return}
         if attempt({try store.deleteCard(id:id)}) { selectedCard=nil;flipped=false;render() }
     }
     @objc private func drawCard() { selectedCard=store.nextCard(excluding:selectedCard)?.id;practicing=true;flipped=false;render() }
@@ -296,25 +266,25 @@ final class ActivitiesRoom: NSObject, NSWindowDelegate {
     }
     @objc private func deleteLetter() {
         guard let id=activeLetterID else{return}
+        guard confirmDestructiveAction("删除这封信？",message:"删除后无法恢复。") else{return}
         if attempt({try store.deleteLetter(id:id)}) {activeLetterID=nil;render()}
     }
     func refreshDelivery() {
         // Do not rebuild an editor while the user is typing.
-        if tabs.selectedSegment == 1 { render() }
-        if tabs.selectedSegment == 3 && !store.unreadLetters.isEmpty { status.stringValue="✉️ 新信到了，点击桌面信封或重新打开信箱查看。" }
+        if selectedTab == 1 { render() }
+        if selectedTab == 3 && !store.unreadLetters.isEmpty { status.stringValue="✉️ 新信到了，点击桌面信封或重新打开信箱查看。" }
     }
     func runChecks(at directory:URL)throws {
-        window.orderOut(nil)
-        tabs.selectedSegment=0;render()
+        selectedTab=0;render()
         titleInput?.stringValue="收工啦"
         saveCue()
         precondition(store.save.activities.cues.contains{$0.name=="收工啦"})
-        tabs.selectedSegment=2;render()
+        selectedTab=2;render()
         titleInput?.stringValue="TCP 为什么需要序列号？"
         answerInput?.stringValue="按序重组数据，并识别重复内容。"
         saveCard();drawCard();flipCard()
         precondition(practicing && flipped && selectedCard != nil)
-        tabs.selectedSegment=3;render()
+        selectedTab=3;render()
         titleInput?.stringValue="明天从图三继续。"
         letterDate?.dateValue=Date().addingTimeInterval(60)
         sendLetter()
@@ -323,15 +293,16 @@ final class ActivitiesRoom: NSObject, NSWindowDelegate {
         render();openLetter()
         precondition(store.save.activities.letters.last?.readAt != nil)
         let startButton=NSButton();startButton.tag=0
-        tabs.selectedSegment=1;startTrip(startButton)
+        selectedTab=1;startTrip(startButton)
         precondition(store.save.activities.expedition != nil)
         try store.settleActivities(now:Date().addingTimeInterval(61));onChange?()
         precondition(store.save.activities.collection["河岸鹅卵石"]==1)
         for tab in 0..<4 {
-            tabs.selectedSegment=tab;render()
-            window.contentView?.layoutSubtreeIfNeeded();window.displayIfNeeded()
+            selectedTab=tab;render()
+            body.layoutSubtreeIfNeeded();body.displayIfNeeded()
             RunLoop.current.run(until:Date().addingTimeInterval(0.05))
-            guard let root=window.contentView,let bitmap=root.bitmapImageRepForCachingDisplay(in:root.bounds) else{fatalError("Missing activity preview")}
+            let root=body
+            guard let bitmap=root.bitmapImageRepForCachingDisplay(in:root.bounds) else{fatalError("Missing activity preview")}
             root.cacheDisplay(in:root.bounds,to:bitmap)
             try bitmap.representation(using:.png,properties:[:])!.write(to:directory.appendingPathComponent("activities-\(tab).png"))
         }

@@ -3,18 +3,14 @@ import AppKit
 /// Accessories use the same 192×208 canvas as the fox, so mirroring remains aligned.
 enum ScarfRenderer {
     static func overlay(state:StudioState, walking:Bool, frame:Int)->NSImage? {
-        guard state.scarf != "none" else { return nil }
-        if let pack=state.packs.first(where:{$0.id.uuidString==state.scarf}) {
-            let images=walking ? pack.walking : pack.idle
-            return NSImage(data:images[frame%images.count])
-        }
+        guard let pack=state.packs.first(where:{$0.id.uuidString==state.scarf}) else{return nil}
+        let images=walking ? pack.walking : pack.idle
+        return NSImage(data:images[frame%images.count])
+    }
+    // A drawing guide for exported legacy templates, never used by built-in outfits.
+    private static func templateImage(walking:Bool,frame:Int)->NSImage {
         return NSImage(size:NSSize(width:192,height:208),flipped:false) { _ in
-            let color:NSColor
-            switch state.scarf {
-            case "amber":color=NSColor(srgbRed:0.91,green:0.57,blue:0.17,alpha:1)
-            case "rose":color=NSColor(srgbRed:0.72,green:0.30,blue:0.39,alpha:1)
-            default:color=NSColor(srgbRed:0.14,green:0.57,blue:0.57,alpha:1)
-            }
+            let color=NSColor(srgbRed:0.14,green:0.57,blue:0.57,alpha:1)
             color.setFill()
             if walking {
                 let shifts:[CGFloat]=[0,1,0,-1,0,1,0,-1]
@@ -34,21 +30,24 @@ enum ScarfRenderer {
     }
     static func importPack(at folder:URL)throws->ScarfPack {
         struct Manifest:Decodable {let version:Int;let name:String;let idle:[String];let walking:[String]}
-        let metadata=folder.appendingPathComponent("scarf.json")
-        guard (try metadata.resourceValues(forKeys:[.fileSizeKey])).fileSize ?? 20001 <= 20000 else{throw error("素材清单过大。")}
-        let raw=try Data(contentsOf:metadata)
-        guard raw.count<=20000 else{throw error("素材清单过大。")}
+        let base = folder.resolvingSymlinksInPath().standardizedFileURL.path + "/"
+        func read(_ file: URL, limit: Int, message: String) throws -> Data {
+            guard file.path.hasPrefix(base), try file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else { throw error(message) }
+            let handle = try FileHandle(forReadingFrom: file)
+            defer { try? handle.close() }
+            guard let bytes = try handle.read(upToCount: limit + 1), !bytes.isEmpty, bytes.count <= limit else { throw error(message) }
+            return bytes
+        }
+        let metadata = folder.appendingPathComponent("scarf.json").resolvingSymlinksInPath().standardizedFileURL
+        let raw = try read(metadata, limit: 20_000, message: "素材清单需在配饰文件夹内，大小不得超过 20 KB。")
         let manifest=try JSONDecoder().decode(Manifest.self,from:raw)
         guard manifest.version==1, !manifest.name.isEmpty, manifest.name.count<=80,
               manifest.idle.count==6,manifest.walking.count==8 else{throw error("需要 6 帧 idle 和 8 帧 walking，清单版本为 1。")}
-        let base=folder.resolvingSymlinksInPath().standardizedFileURL.path+"/"
         func load(_ paths:[String])throws->[Data] {
             try paths.map { relative in
                 let file=folder.appendingPathComponent(relative).resolvingSymlinksInPath().standardizedFileURL
                 guard !relative.hasPrefix("/"),file.path.hasPrefix(base),file.pathExtension.lowercased()=="png" else{throw error("素材路径必须位于所选文件夹内。")}
-                let size=(try file.resourceValues(forKeys:[.fileSizeKey])).fileSize ?? 0
-                guard size>0,size<=300000 else{throw error("素材缺失或过大：\(relative)")}
-                let data=try Data(contentsOf:file)
+                let data = try read(file, limit: 300_000, message: "素材缺失或过大：\(relative)")
                 guard CompanionStore.validOverlayHeader(data), let bitmap=NSBitmapImageRep(data:data),bitmap.hasAlpha else{throw error("\(relative) 必须是 192×208 的透明 PNG。")}
                 let corners=[(0,0),(191,0),(0,207),(191,207)]
                 guard corners.allSatisfy({(bitmap.colorAt(x:$0.0,y:$0.1)?.alphaComponent ?? 1)<0.1}) else{throw error("配饰四角应透明，以免遮盖狐狸。")}
@@ -60,14 +59,13 @@ enum ScarfRenderer {
     static func exportTemplate(to folder:URL)throws {
         try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true)
         var paths:[String:[String]]=[:]
-        var state=StudioState();state.scarf="teal"
         for (name,count) in [("idle",6),("walking",8)] {
             let directory=folder.appendingPathComponent(name)
             try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
             paths[name]=[]
             for index in 0..<count {
                 let file=String(format:"%@/%02d.png",name,index)
-                let image=overlay(state:state,walking:name=="walking",frame:index)!
+                let image=templateImage(walking:name=="walking",frame:index)
                 // Explicit pixel size keeps the template independent of display scaling.
                 let bitmap=NSBitmapImageRep(bitmapDataPlanes:nil,pixelsWide:192,pixelsHigh:208,bitsPerSample:8,samplesPerPixel:4,hasAlpha:true,isPlanar:false,colorSpaceName:.deviceRGB,bytesPerRow:0,bitsPerPixel:0)!
                 let context=NSGraphicsContext(bitmapImageRep:bitmap)!

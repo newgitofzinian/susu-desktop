@@ -1,0 +1,33 @@
+{
+  "run": [
+    {"back":[108,118],"throat":[147,132],"shoulder":[116,129],"flank":[94,141],"view":"side","occluders":[]},
+    {"back":[108,119],"throat":[147,134],"shoulder":[115,131],"flank":[94,143],"view":"side","occluders":[]},
+    {"back":[109,112],"throat":[147,126],"shoulder":[118,122],"flank":[86,127],"view":"side","occluders":[[105,102,165,103,166,114,153,117,130,115,114,110]]},
+    {"back":[108,121],"throat":[147,135],"shoulder":[115,133],"flank":[94,144],"view":"side","occluders":[]},
+    {"back":[108,120],"throat":[147,134],"shoulder":[115,132],"flank":[95,142],"view":"side","occluders":[]},
+    {"back":[106,122],"throat":[146,136],"shoulder":[113,134],"flank":[90,143],"view":"side","occluders":[]},
+    {"back":[109,112],"throat":[147,126],"shoulder":[118,122],"flank":[86,127],"view":"side","occluders":[[105,102,165,103,166,114,153,117,130,115,114,110]]},
+    {"back":[108,121],"throat":[147,135],"shoulder":[115,133],"flank":[95,144],"view":"side","occluders":[]}
+  ],
+  "stretch": [
+    {"back":[101,118],"throat":[151,130],"shoulder":[107,131],"flank":[81,141],"view":"side","occluders":[]},
+    {"back":[101,120],"throat":[151,132],"shoulder":[107,133],"flank":[81,143],"view":"side","occluders":[]},
+    {"back":[74,148],"throat":[131,176],"shoulder":[78,150],"flank":[64,142],"view":"prone","occluders":[[72,113,174,115,175,153,154,170,136,176,119,173,104,165,94,167,85,160,78,156]]},
+    {"back":[74,148],"throat":[131,176],"shoulder":[78,150],"flank":[64,142],"view":"prone","occluders":[[72,113,174,115,175,153,154,170,136,176,119,173,104,165,94,167,85,160,78,156]]},
+    {"back":[106,120],"throat":[146,136],"shoulder":[121,133],"flank":[81,138],"view":"side","occluders":[]},
+    {"back":[105,120],"throat":[146,135],"shoulder":[120,132],"flank":[81,138],"view":"side","occluders":[]}
+  ],
+  "play": [
+    {"back":[84,147],"throat":[142,164],"shoulder":[86,148],"flank":[69,145],"view":"prone","occluders":[]},
+    {"back":[105,123],"throat":[149,140],"shoulder":[115,145],"flank":[84,160],"view":"side","occluders":[]},
+    {"back":[103,108],"throat":[147,122],"shoulder":[108,117],"flank":[90,122],"view":"prone","occluders":[[134,132,148,119,166,119,175,129,171,146,143,152]]},
+    {"back":[77,149],"throat":[130,175],"shoulder":[81,151],"flank":[61,144],"view":"prone","occluders":[]},
+    {"back":[105,127],"throat":[148,143],"shoulder":[116,148],"flank":[85,161],"view":"prone","occluders":[]},
+    {"back":[85,150],"throat":[136,169],"shoulder":[86,151],"flank":[71,144],"view":"prone","occluders":[]}
+  ],
+  "closeup": [
+    {"back":[59,119],"throat":[112,119],"shoulder":[74,145],"flank":[81,164],"view":"front","occluders":[]},
+    {"back":[57,121],"throat":[109,121],"shoulder":[71,147],"flank":[78,166],"view":"front","occluders":[]},
+    {"back":[58,121],"throat":[110,121],"shoulder":[72,148],"flank":[79,166],"view":"front","occluders":[]}
+  ]
+}

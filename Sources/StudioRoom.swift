@@ -1,8 +1,7 @@
 import AppKit
 import UniformTypeIdentifiers
 
-final class StudioRoom:NSObject,NSWindowDelegate {
-    let window:NSWindow
+final class StudioRoom:NSObject {
     let store:CompanionStore
     let frames:SpriteFrames
     var onChange:(()->Void)?
@@ -13,11 +12,11 @@ final class StudioRoom:NSObject,NSWindowDelegate {
     var closeupMuted=true
     private var preferredWidth:CGFloat = {
         let saved=UserDefaults.standard.double(forKey:"houseWidth")
-        return saved>0 ? CGFloat(saved) : 520
+        return saved>0 ? CGFloat(saved) : 440
     }()
     var getNestArea:(()->NSRect)?
     private(set) var foxInNest=false
-    private let tabs:NSSegmentedControl
+    private var selectedTab=0
     private let body=NSView(frame:NSRect(x:24,y:20,width:632,height:410))
     private let status=NSTextField(wrappingLabelWithString:"")
     private var nestPreview:NestCanvas?
@@ -32,29 +31,18 @@ final class StudioRoom:NSObject,NSWindowDelegate {
     private var caption:NSTextField?
     private var postcard:NSImageView?
     private var closeup:CloseupView?
+    private var previewSeason: PetSeason?
 
     init(store:CompanionStore,frames:SpriteFrames) {
         self.store=store;self.frames=frames
-        tabs=NSSegmentedControl(labels:["小窝布置","换装工坊","明信片","近看溯溯"],trackingMode:.selectOne,target:nil,action:nil)
         nest=NestWindow(frames:frames)
-        window=RoomWindow(contentRect:NSRect(x:0,y:0,width:680,height:570),styleMask:[.titled,.closable,.miniaturizable],backing:.buffered,defer:false)
         super.init()
-        window.title="溯溯 · 生活工坊 2.2";window.isReleasedWhenClosed=false;window.delegate=self
-        let root=NSView(frame:NSRect(x:0,y:0,width:680,height:570))
-        root.wantsLayer=true;root.layer?.backgroundColor=NSColor.windowBackgroundColor.cgColor;window.contentView=root
-        label("一起布置狐狸的生活",rect:NSRect(x:24,y:520,width:632,height:36),size:24,parent:root)
-        tabs.frame=NSRect(x:24,y:476,width:632,height:32);tabs.target=self;tabs.action=#selector(tabChanged);tabs.selectedSegment=0;root.addSubview(tabs)
-        status.frame=NSRect(x:24,y:435,width:632,height:30);root.addSubview(status);root.addSubview(body)
         nest.closed={ [weak self] in self?.releaseFox() }
         nest.menuProvider={ [weak self] in self?.desktopMenu?() ?? NSMenu() }
         nest.canvas.onToggle={ [weak self] in self?.toggleMat() }
+        nest.canvas.onFinished={ [weak self] in self?.releaseFox() }
         nest.canvas.saveLayout={ [weak self] layout in try self?.persistFurniture(layout) }
-        window.center();render()
     }
-    func show(tab:Int=0) {
-        tabs.selectedSegment=tab;render();window.makeKeyAndOrderFront(nil);NSApp.activate(ignoringOtherApps:true)
-    }
-    func windowWillClose(_ notification:Notification) {closeup?.stop()}
     @discardableResult private func label(_ text:String,rect:NSRect,size:CGFloat=14,parent:NSView?=nil)->NSTextField {
         let field=NSTextField(wrappingLabelWithString:text);field.frame=rect;field.font = .systemFont(ofSize:size,weight:size>20 ? .semibold : .regular);(parent ?? body).addSubview(field);return field
     }
@@ -81,6 +69,12 @@ final class StudioRoom:NSObject,NSWindowDelegate {
     func refreshState() {
         if !nest.canvas.isRearranging {nest.canvas.state=store.save.studio;nest.canvas.needsDisplay=true}
         if let nestPreview,!nestPreview.isRearranging {nestPreview.state=store.save.studio;nestPreview.needsDisplay=true}
+        let season = store.save.studio.season
+        if previewSeason != season {
+            previewSeason = season
+            if let closeup { dressCloseup(closeup) }
+            if postcard?.window?.isVisible == true { updatePostcard() }
+        }
     }
     var desktopAnchor:NSRect? {
         guard nest.isVisible else{return nil}
@@ -104,7 +98,7 @@ final class StudioRoom:NSObject,NSWindowDelegate {
     }
     private var positionedHouse=false
     func pauseHouse(_ paused:Bool){nest.paused=paused}
-    func showHouse() {openNest()}
+    func showHouse() {recall()}
     func restOutside() {recall()}
     func putMatInside() {nest.canvas.putAway()}
     func toggleMat() {
@@ -114,27 +108,25 @@ final class StudioRoom:NSObject,NSWindowDelegate {
     func resizeHouse(_ width:CGFloat) {
         preferredWidth=width
         if !CommandLine.arguments.contains("--smoke-test"){UserDefaults.standard.set(Double(width),forKey:"houseWidth")}
-        lastArea=nil;openNest()
+        lastArea=nil;if nest.isVisible {updateNestArea()}
     }
     func releaseFox() {
-        guard foxInNest else{return}
+        guard foxInNest else{nest.orderOut(nil);return}
         let rect=nest.convertToScreen(nest.canvas.foxRect)
-        foxInNest=false;nest.canvas.dismissFox();onReturnToDesktop?(rect);onNestPresence?(false)
+        foxInNest=false;nest.canvas.dismissFox();nest.orderOut(nil);onReturnToDesktop?(rect);onNestPresence?(false)
     }
     func leaveNest() {
         releaseFox();nest.orderOut(nil)
-        if !CommandLine.arguments.contains("--smoke-test"){UserDefaults.standard.set(false,forKey:"houseShown")}
     }
     func suspendHouse(_ hidden:Bool) {
         if hidden {pausedVisible=nest.isVisible;nest.orderOut(nil)}
-        else if pausedVisible {nest.orderFrontRegardless();pausedVisible=false}
+        else if pausedVisible && foxInNest {nest.orderFrontRegardless();pausedVisible=false}
     }
     private var pausedVisible=false
-    @objc private func tabChanged() {render()}
     private func render() {
         closeup?.stop();closeup=nil;nestPreview=nil
         body.subviews.forEach{$0.removeFromSuperview()}
-        switch tabs.selectedSegment {
+        switch selectedTab {
         case 0:
             status.stringValue="拖动睡垫、收藏架和灯，摆好后叫溯溯回来。"
             let scene=NestCanvas(frame:NSRect(x:0,y:70,width:632,height:330));scene.state=store.save.studio;scene.frames=frames
@@ -149,25 +141,30 @@ final class StudioRoom:NSObject,NSWindowDelegate {
     }
     @objc private func openNest() {
         nest.canvas.state=store.save.studio;nest.orderFrontRegardless();lastArea=nil;updateNestArea()
-        if !CommandLine.arguments.contains("--smoke-test"){UserDefaults.standard.set(true,forKey:"houseShown")}
     }
     @objc private func recall() {
         guard canStartHouse?() ?? true else{return}
         guard store.save.activities.expedition == nil else{status.stringValue="溯溯还在探险，回来后再叫它进窝吧。";return}
         openNest();foxInNest=true;nest.canvas.recall();onNestPresence?(true)
-        status.stringValue="溯溯正在进屋拿垫子。"
+        status.stringValue="溯溯正在进屋拿毯子；休息结束后房子会自动收起。"
     }
     @objc private func closeNest() {leaveNest()}
     func desktopCloseup(feedback:@escaping(String)->Void)->NSView {
         closeup?.stop()
         let view=CloseupView(frame:NSRect(x:0,y:0,width:360,height:350))
-        view.image=frames.idle[0];view.reactions=frames.closeup;view.feedback=feedback;view.menuProvider=desktopMenu;view.muted=closeupMuted
+        dressCloseup(view)
+        view.feedback=feedback;view.menuProvider=desktopMenu;view.muted=closeupMuted
         closeup=view;return view
+    }
+    private func dressCloseup(_ view: CloseupView) {
+        let season = store.save.studio.season
+        view.setAppearance(idle: frames.character(.idle, frame: 0, season: season),
+                           reactions: (0..<CharacterPose.closeup.frameCount).map { frames.character(.closeup, frame: $0, season: season) })
     }
     func stopCloseup(){closeup?.stop()}
     func toggleCloseupSound(){closeupMuted.toggle();closeup?.muted=closeupMuted}
     func desktopPhotoView()->NSView {
-        tabs.selectedSegment=2;render()
+        selectedTab=2;render()
         body.removeFromSuperview();body.frame.origin = .zero
         return body
     }
@@ -183,12 +180,21 @@ final class StudioRoom:NSObject,NSWindowDelegate {
     }
     func deleteDesktopLook(_ index:Int) {
         guard store.save.studio.looks.indices.contains(index) else{return}
-        var state=store.save.studio;state.looks.remove(at:index)
+        let look = store.save.studio.looks[index]
+        guard confirmDestructiveAction("删除造型「\(look.name)」？", message: "删除后无法恢复。") else { return }
+        var state = store.save.studio
+        state.looks.removeAll { $0.id == look.id }
         _=attempt{try store.saveStudio(state)}
     }
     func deleteDesktopPack(_ index:Int) {
-        guard store.save.studio.packs.indices.contains(index) else{return}
-        var state=store.save.studio;let id=state.packs.remove(at:index).id.uuidString
+        guard store.save.studio.packs.indices.contains(index) else { return }
+        let pack = store.save.studio.packs[index]
+        let id = pack.id.uuidString
+        let dependent = store.save.studio.looks.filter { $0.scarf == id }.count
+        let impact = dependent > 0 ? "同时会删除 \(dependent) 个使用此配饰的造型。删除后无法恢复。" : "从溯溯存档中移除后无法恢复。"
+        guard confirmDestructiveAction("删除配饰包「\(pack.name)」？", message: impact) else { return }
+        var state = store.save.studio
+        state.packs.removeAll { $0.id == pack.id }
         state.looks.removeAll{$0.scarf==id}
         if state.scarf==id {state.scarf="none"}
         _=attempt{try store.saveStudio(state)}
@@ -221,7 +227,7 @@ final class StudioRoom:NSObject,NSWindowDelegate {
             NSGraphicsContext.saveGraphicsState()
             if left && walking {var t=AffineTransform(translationByX:192,byY:0);t.scale(x:-1,y:1);(t as NSAffineTransform).concat()}
             let r=NSRect(x:0,y:0,width:192,height:208)
-            (walking ? frames.walk[2] : frames.idle[0]).draw(in:r)
+            frames.character(walking ? .walk : .idle, frame: walking ? 2 : 0, season: state.season).image.draw(in:r)
             ScarfRenderer.overlay(state:state,walking:walking,frame:walking ? 2 : 0)?.draw(in:r)
             NSGraphicsContext.restoreGraphicsState();return true
         }
@@ -248,9 +254,8 @@ final class StudioRoom:NSObject,NSWindowDelegate {
     }
     @objc private func deleteLook() {
         let index=(looks?.indexOfSelectedItem ?? 0)-1
-        guard store.save.studio.looks.indices.contains(index) else{return}
-        var state=store.save.studio;state.looks.remove(at:index)
-        if attempt({try store.saveStudio(state)}){render()}
+        deleteDesktopLook(index)
+        render()
     }
     @objc private func importScarf() {
         let dialog=NSOpenPanel();dialog.canChooseFiles=false;dialog.canChooseDirectories=true
@@ -264,9 +269,10 @@ final class StudioRoom:NSObject,NSWindowDelegate {
         if attempt({try ScarfRenderer.exportTemplate(to:target)}){status.stringValue="已创建模板文件夹：\(target.lastPathComponent)"}
     }
     @objc private func removePack() {
-        var state=store.save.studio;let id=state.scarf
-        state.packs.removeAll{$0.id.uuidString==id};state.looks.removeAll{$0.scarf==id};state.scarf="none"
-        if attempt({try store.saveStudio(state)}){render()}
+        let state = store.save.studio
+        guard let index = state.packs.firstIndex(where: { $0.id.uuidString == state.scarf }) else { return }
+        deleteDesktopPack(index)
+        render()
     }
     private func renderPostcard() {
         status.stringValue="选背景、定格姿势，写一张属于你的狐狸明信片。"
@@ -283,9 +289,9 @@ final class StudioRoom:NSObject,NSWindowDelegate {
         NSGraphicsContext.saveGraphicsState();NSGraphicsContext.current=NSGraphicsContext(bitmapImageRep:bitmap)
         let colors:[NSColor]=[NSColor(srgbRed:0.87,green:0.93,blue:0.82,alpha:1),NSColor(srgbRed:0.81,green:0.91,blue:0.94,alpha:1),NSColor(srgbRed:0.98,green:0.92,blue:0.81,alpha:1)]
         colors[min(2,max(0,index))].setFill();NSBezierPath(rect:NSRect(x:0,y:0,width:1200,height:720)).fill()
-        let images=kind==1 ? frames.stretch : kind==2 ? frames.play : frames.idle
+        let pose: CharacterPose = kind == 1 ? .stretch : kind == 2 ? .play : .idle
         let r=NSRect(x:408,y:160,width:384,height:416)
-        images[frame%6].draw(in:r)
+        frames.character(pose, frame: frame, season: store.save.studio.season).image.draw(in:r)
         if kind==0 {ScarfRenderer.overlay(state:store.save.studio,walking:false,frame:frame%6)?.draw(in:r)}
         let paragraph=NSMutableParagraphStyle();paragraph.alignment = .center
         (text as NSString).draw(with:NSRect(x:70,y:55,width:1060,height:90),options:.usesLineFragmentOrigin,attributes:[.font:NSFont.systemFont(ofSize:30),.foregroundColor:NSColor.darkGray,.paragraphStyle:paragraph])
@@ -303,7 +309,7 @@ final class StudioRoom:NSObject,NSWindowDelegate {
     }
     private func renderCloseup() {
         status.stringValue="轻划耳尖，或按从上到下的顺序点三颗琥珀尾纹。"
-        let view=CloseupView(frame:NSRect(x:100,y:50,width:432,height:360));view.image=frames.idle[0];view.reactions=frames.closeup
+        let view=CloseupView(frame:NSRect(x:100,y:50,width:432,height:360));dressCloseup(view)
         view.feedback={ [weak self] in self?.status.stringValue=$0 };body.addSubview(view);closeup=view
         button("挠左耳",x:0,y:7,width:130,action:#selector(scratch(_:)),tag:0)
         button("挠右耳",x:145,y:7,width:130,action:#selector(scratch(_:)),tag:1)
@@ -312,18 +318,17 @@ final class StudioRoom:NSObject,NSWindowDelegate {
     @objc private func scratch(_ sender:NSButton){closeup?.scratch(sender.tag)}
     @objc private func muteChanged(_ sender:NSButton){closeup?.muted=sender.state == .on}
     func runChecks(at directory:URL)throws {
-        for delay in [0.0,3.0,6.2,7.0,12.8,13.5,30.0] {
+        for delay in [0.0,3.0,4.4,6.0,9.3,10.7,30.0] {
             var routine=HouseRoutine();routine.takeMat();routine.advance(delay);routine.putMatAway();routine.advance(60)
-            precondition(routine.phase == .inside && routine.isStored,"Packing up during any outing phase must finish indoors")
-            routine.advance(600);precondition(routine.phase == .inside)
+            precondition(routine.phase == .free,"Packing up must return to free desktop activity")
+            routine.advance(600);precondition(routine.phase == .free)
             routine.takeMat();routine.advance(20);precondition(routine.phase == .resting)
             routine.release();precondition(routine.phase == .free)
         }
-        window.orderOut(nil)
         var initial=store.save.studio;initial.scarf="teal";try store.saveStudio(initial)
         for index in 0..<4 {
-            tabs.selectedSegment=index;render();window.contentView?.layoutSubtreeIfNeeded();window.displayIfNeeded();RunLoop.current.run(until:Date().addingTimeInterval(0.04))
-            let root=window.contentView!,bitmap=root.bitmapImageRepForCachingDisplay(in:root.bounds)!
+            selectedTab=index;render();body.layoutSubtreeIfNeeded();body.displayIfNeeded();RunLoop.current.run(until:Date().addingTimeInterval(0.04))
+            let root=body,bitmap=root.bitmapImageRepForCachingDisplay(in:root.bounds)!
             root.cacheDisplay(in:root.bounds,to:bitmap);try bitmap.representation(using:.png,properties:[:])!.write(to:directory.appendingPathComponent("studio-\(index).png"))
         }
         closeup?.scratch(0)
@@ -360,31 +365,37 @@ final class StudioRoom:NSObject,NSWindowDelegate {
         try JSONSerialization.data(withJSONObject:manifest).write(to:folder.appendingPathComponent("scarf.json"))
         do{_ = try ScarfRenderer.importPack(at:folder);fatalError("Escaped accessory path accepted")}catch{}
         precondition(store.save.studio.scarf==originalScarf)
+        precondition(!nest.isVisible && !nest.canvas.houseNeeded,"House must not occupy the desktop before rest")
+        resizeHouse(440);precondition(!nest.isVisible,"Changing size must not summon the house")
         recall()
         precondition(!nest.styleMask.contains(.titled) && !nest.isOpaque)
         precondition(nest.canvas.routine.phase == .entering)
-        nest.canvas.simulate(6.6)
-        precondition(nest.canvas.routine.phase == .bringingMat)
-        nest.canvas.simulate(7.5)
-        precondition(nest.canvas.routine.phase == .settling || nest.canvas.routine.phase == .resting)
-        nest.canvas.simulate(1)
-        precondition(nest.canvas.routine.phase == .resting)
         func snapshot(_ name:String)throws {
             let view=nest.canvas,rep=view.bitmapImageRepForCachingDisplay(in:view.bounds)!
             view.cacheDisplay(in:view.bounds,to:rep)
             try rep.representation(using:.png,properties:[:])!.write(to:directory.appendingPathComponent(name+".png"))
         }
+        func nextPhase() {nest.canvas.simulate(nest.canvas.routine.duration-nest.canvas.routine.elapsed+0.001)}
+        try snapshot("desktop-house-entering")
+        nextPhase();precondition(housePhase == .inside)
+        nextPhase();precondition(housePhase == .bringingMat)
+        nest.canvas.simulate(2.2);try snapshot("desktop-house-carry")
+        nextPhase();precondition(housePhase == .unrolling)
+        nest.canvas.simulate(0.85);try snapshot("desktop-house-lay-blanket")
+        nextPhase();precondition(housePhase == .settling)
+        nextPhase();precondition(housePhase == .resting)
+        precondition(nest.isVisible && foxInNest)
         try snapshot("desktop-house-rest")
-        putMatInside();nest.canvas.simulate(1.5)
-        precondition(nest.canvas.routine.phase == .returning)
-        try snapshot("desktop-house-carry")
-        nest.canvas.simulate(6)
-        precondition(nest.canvas.routine.phase == .inside)
-        nest.canvas.simulate(20)
-        precondition(nest.canvas.routine.phase == .inside,"Stored mat stays inside")
+        putMatInside();nextPhase();precondition(housePhase == .rolling)
+        nest.canvas.simulate(0.8);try snapshot("desktop-house-pack-blanket")
+        nextPhase();precondition(housePhase == .returning)
+        nest.canvas.simulate(2);try snapshot("desktop-house-return")
+        nextPhase();precondition(housePhase == .inside)
         try snapshot("desktop-house-inside")
-        restOutside();nest.canvas.simulate(0.6)
-        precondition(nest.canvas.routine.phase == .bringingMat)
+        nextPhase();precondition(housePhase == .leaving)
+        nextPhase();precondition(housePhase == .free && !nest.isVisible && !foxInNest,"House and blanket disappear after the fox comes back out")
+        precondition(!nest.canvas.containsProp(NSPoint(x:nest.canvas.houseRect.midX,y:nest.canvas.houseRect.midY)))
+        restOutside();precondition(nest.isVisible && foxInNest)
         precondition(!nest.canvas.containsProp(NSPoint(x:nest.canvas.bounds.maxX-1,y:nest.canvas.bounds.maxY-1)))
         closeNest();precondition(!foxInNest && !nest.isVisible)
     }

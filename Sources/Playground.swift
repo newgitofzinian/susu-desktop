@@ -5,6 +5,16 @@ let foodPasteboard = NSPasteboard.PasteboardType("local.susu.food")
 let foodNames = ["月牙饼", "云朵糕", "琥珀糖"]
 let foodIcons = ["🥐", "☁️", "🍬"]
 
+@discardableResult
+func confirmDestructiveAction(_ title: String, message: String, actionLabel: String = "删除") -> Bool {
+    let alert = NSAlert()
+    alert.messageText = title
+    alert.informativeText = message
+    alert.addButton(withTitle: "取消")
+    alert.addButton(withTitle: actionLabel)
+    return alert.runModal() == .alertSecondButtonReturn
+}
+
 final class FoodTile: NSView, NSDraggingSource {
     var index = 0
     override func draw(_ dirtyRect: NSRect) {
@@ -84,41 +94,26 @@ final class ForestGameView:NSView {
     }
 }
 
-final class RoomWindow:NSWindow {
-    override func cancelOperation(_ sender:Any?) { close() }
-}
-
-final class CompanionRoom:NSObject,NSWindowDelegate {
+final class CompanionRoom:NSObject {
     let store:CompanionStore
     let frames:SpriteFrames
-    let window:NSWindow
-    private var segment:NSSegmentedControl!
+    private var selectedTab = 0
     private var content:NSView!
-    private var message:NSTextField!
+    private lazy var message:NSTextField = NSTextField(wrappingLabelWithString:"")
     private var forest:ForestGameView?
     private var gameTimer:Timer?
     private var journalPicker:NSPopUpButton?
     private var note:NSTextField?
+    private var journalPage = 0
+    private var selectedJournalUUID: UUID?
     private var generation=0
     private var desktopMode=false
     var animate:((PetAction)->Void)?
     var taskDetail="还没有交办任务。"
-    var onInteraction:((Bool)->Void)?
     init(store:CompanionStore,frames:SpriteFrames) {
         self.store=store;self.frames=frames
-        window=RoomWindow(contentRect:NSRect(x:0,y:0,width:560,height:470),styleMask:[.titled,.closable,.miniaturizable],backing:.buffered,defer:false)
         super.init()
-        window.title="溯溯 · 林间小屋 2.2";window.isReleasedWhenClosed=false;window.delegate=self
-        let root=NSView(frame:NSRect(x:0,y:0,width:560,height:470))
-        root.wantsLayer=true;root.layer?.backgroundColor=NSColor.windowBackgroundColor.cgColor
-        window.contentView=root
-        label("今天想一起做什么？",x:24,y:424,width:510,size:24,in:root)
-        segment=NSSegmentedControl(labels:["藏松果","投喂","双盘","手帐","任务","存档"],trackingMode:.selectOne,target:self,action:#selector(tabChanged))
-        segment.frame=NSRect(x:24,y:376,width:512,height:32); segment.selectedSegment=0;root.addSubview(segment)
-        message=label("",x:24,y:337,width:510,size:14,in:root)
-        message.frame.size.height=30
-        content=NSView(frame:NSRect(x:24,y:20,width:512,height:300));root.addSubview(content)
-        window.center(); render()
+        content=NSView(frame:NSRect(x:24,y:20,width:512,height:300))
     }
     @discardableResult private func label(_ text:String,x:CGFloat,y:CGFloat,width:CGFloat,size:CGFloat=14,in parent:NSView)->NSTextField {
         let field=NSTextField(wrappingLabelWithString:text)
@@ -136,36 +131,29 @@ final class CompanionRoom:NSObject,NSWindowDelegate {
         }
     }
     func desktopView(tab:Int)->NSView {
-        desktopMode=true;segment.selectedSegment=tab;render()
+        desktopMode=true;selectedTab=tab;render()
         let wrapper=NSView(frame:NSRect(x:0,y:0,width:512,height:tab==0 ? 180 : 350))
         content.removeFromSuperview();content.frame.origin=NSPoint(x:0,y:0);wrapper.addSubview(content)
         message.removeFromSuperview();message.frame=NSRect(x:10,y:tab==0 ? 144 : 310,width:492,height:32);wrapper.addSubview(message)
         return wrapper
     }
-    var desktopTaskCommand:String {taskCommand}
     func exportDesktopSave(){exportSave()}
     func importDesktopSave(){importSave()}
-    func show(tab:Int=0) {
-        segment.selectedSegment=tab;render();window.makeKeyAndOrderFront(nil);NSApp.activate(ignoringOtherApps:true)
-        onInteraction?(true)
-    }
-    func windowWillClose(_ notification:Notification) { cancelGame();onInteraction?(false) }
-    @objc private func tabChanged() { render() }
     private func cancelGame() { gameTimer?.invalidate();gameTimer=nil;generation += 1 }
-    func interrupt() { cancelGame();forest?.game = PineconeGame();if segment.selectedSegment==0 { render() } }
+    func interrupt() { cancelGame();forest?.game = PineconeGame();if selectedTab==0, content.window != nil { render() } }
     private func render() {
         cancelGame();content.subviews.forEach{$0.removeFromSuperview()};forest=nil
-        switch segment.selectedSegment {
+        switch selectedTab {
         case 0:
             message.stringValue="溯溯闭上眼啦。点击一堆落叶，把松果藏进去。"
             let view=ForestGameView(frame:NSRect(x:0,y:30,width:512,height:desktopMode ? 100 : 250))
-            view.pose=frames.stretch[3];view.desktopMode=desktopMode;view.choose={ [weak self] in self?.choosePile($0) }
+            view.pose=frames.character(.stretch, frame: 3, season: store.save.studio.season).image;view.desktopMode=desktopMode;view.choose={ [weak self] in self?.choosePile($0) }
             content.addSubview(view);forest=view
             button("再玩一局",x:0,y:0,action:#selector(newGame))
             button("让它自己选",x:180,y:0,action:#selector(noHint))
         case 1:
             message.stringValue="把一份点心拖给狐狸，也可以拖到桌面上的溯溯。"
-            let fox=FeedingFox(frame:NSRect(x:165,y:92,width:170,height:184));fox.image=frames.idle[0]
+            let fox=FeedingFox(frame:NSRect(x:165,y:92,width:170,height:184));fox.image=frames.character(.idle, frame: 0, season: store.save.studio.season).image
             fox.imageScaling = .scaleProportionallyUpOrDown
             fox.receive={ [weak self] in self?.feed($0) };content.addSubview(fox)
             for i in 0..<3 {
@@ -185,7 +173,7 @@ final class CompanionRoom:NSObject,NSWindowDelegate {
             message.stringValue="请溯溯盯住一次由你交办的命令。"
             label(taskDetail,x:12,y:205,width:480,size:16,in:content)
             label("在终端输入下方命令。用你的命令替换 /usr/bin/true。",x:12,y:140,width:480,in:content)
-            let command=NSTextField(string:taskCommand);command.isEditable=false;command.isSelectable=true
+            let command=NSTextField(string:TaskTool.command ?? TaskTool.unavailable);command.isEditable=false;command.isSelectable=true
             command.frame=NSRect(x:12,y:100,width:488,height:44);content.addSubview(command)
             button("复制命令",x:12,y:45,action:#selector(copyTask))
         default:
@@ -203,15 +191,14 @@ final class CompanionRoom:NSObject,NSWindowDelegate {
             var frame=0
             gameTimer=Timer.scheduledTimer(withTimeInterval:0.16,repeats:true){[weak self,weak fox] timer in
                 guard let self,let fox else{timer.invalidate();return}
-                fox.image=self.frames.play[frame%6];frame += 1
-                if frame==12 {timer.invalidate();fox.image=self.frames.idle[0]}
+                fox.image=self.frames.character(.play, frame: frame%6, season: self.store.save.studio.season).image;frame += 1
+                if frame==12 {timer.invalidate();fox.image=self.frames.character(.idle, frame: 0, season: self.store.save.studio.season).image}
             }
         }
         message.stringValue="溯溯接住了\(foodNames[index])，开心地尝了一口。"
     }
     @objc private func clearFood() {
-        let a=NSAlert();a.messageText="重新培养口味？";a.addButton(withTitle:"清除");a.addButton(withTitle:"取消")
-        guard a.runModal() == .alertFirstButtonReturn else{return}
+        guard confirmDestructiveAction("清除口味记录？",message:"三种点心的次数会归零，无法恢复。", actionLabel: "清除") else{return}
         attempt { try store.clearFood() };render()
     }
     @objc private func compareFood(_ sender:NSButton) {
@@ -221,14 +208,14 @@ final class CompanionRoom:NSObject,NSWindowDelegate {
         for (position,index) in pair.enumerated() {
             label(foodIcons[index]+" "+foodNames[index],x:CGFloat(position)*260+30,y:185,width:230,in:content)
         }
-        let image=NSImageView(frame:NSRect(x:selected==pair[0] ? 100 : 350,y:215,width:90,height:85));image.image=frames.stretch[2];content.addSubview(image)
+        let image=NSImageView(frame:NSRect(x:selected==pair[0] ? 100 : 350,y:215,width:90,height:85));image.image=frames.character(.stretch, frame: 2, season: store.save.studio.season).image;content.addSubview(image)
         animate?(.stretch)
     }
     private func choosePile(_ index:Int) {
         guard let forest else{return}
         switch forest.game.phase {
         case .hide:
-            forest.game.hide(at:index);forest.pose=frames.stretch[2]
+            forest.game.hide(at:index);forest.pose=frames.character(.stretch, frame: 2, season: store.save.studio.season).image
             message.stringValue="它正沿着落叶闻一闻……"
             var step=0
             gameTimer=Timer.scheduledTimer(withTimeInterval:0.55,repeats:true){[weak self] timer in
@@ -238,7 +225,7 @@ final class CompanionRoom:NSObject,NSWindowDelegate {
             }
         case .hint:
             guard forest.game.candidates.contains(index) else{return}
-            forest.game.reveal(index);forest.foxIndex=index;forest.pose=frames.play[2]
+            forest.game.reveal(index);forest.foxIndex=index;forest.pose=frames.character(.play, frame: 2, season: store.save.studio.season).image
             message.stringValue=forest.game.found ? "找到啦！松果就是你藏的位置。" : "翻错啦，松果原来在另一堆。再试一次？"
             if forest.game.found {attempt {try store.record("first-pinecone",text:"第一次找到你藏的松果。")}}
             animate?(.play)
@@ -251,23 +238,44 @@ final class CompanionRoom:NSObject,NSWindowDelegate {
     }
     @objc private func newGame() {render()}
     private func renderJournal() {
-        message.stringValue="共同经历过的事，都留在这里。"
         let picker=NSPopUpButton(frame:NSRect(x:10,y:248,width:490,height:30));journalPicker=picker
-        for entry in store.save.journal {picker.addItem(withTitle:"\(entry.date.formatted(date:.abbreviated,time:.omitted)) · \(entry.text)")}
+        let pages=max(1,(store.save.journal.count+99)/100); journalPage=min(max(0,journalPage),pages-1)
+        message.stringValue = "手帐 · 第 \(journalPage + 1) / \(pages) 页"
+        let start=max(0,store.save.journal.count-(journalPage+1)*100), end=store.save.journal.count-journalPage*100
+        let entries=Array(store.save.journal[start..<end])
+        for (index, entry) in entries.enumerated() {
+            let date = entry.date.formatted(date: .abbreviated, time: .omitted)
+            let excerpt = entry.text.split(whereSeparator: \.isNewline).first?.prefix(60) ?? ""
+            picker.addItem(withTitle: "\(start + index + 1) · \(date) · \(excerpt)")
+            picker.lastItem?.representedObject = entry.id.uuidString
+        }
+        if let id=selectedJournalUUID,let i=entries.firstIndex(where:{$0.id==id}){picker.selectItem(at:i)}else if let first=entries.first{selectedJournalUUID=first.id;picker.selectItem(at:0)}
         picker.target=self;picker.action=#selector(journalChanged);content.addSubview(picker)
-        let edit=NSTextField(string:store.save.journal.first?.note ?? "");edit.placeholderString="给这一天留句话……"
+        let edit=NSTextField(string:entries.first(where:{$0.id==selectedJournalUUID})?.note ?? "");edit.placeholderString="给这一天留句话……"
         edit.frame=NSRect(x:10,y:110,width:490,height:110);content.addSubview(edit);note=edit
         button("保存批注",x:10,y:50,action:#selector(saveNote)).isEnabled = !store.save.journal.isEmpty
         button("删除这条",x:270,y:50,action:#selector(deleteNote)).isEnabled = !store.save.journal.isEmpty
+        button("更早",x:10,y:15,width:100,action:#selector(previousJournalPage)).isEnabled=journalPage < pages-1
+        button("更新",x:120,y:15,width:100,action:#selector(nextJournalPage)).isEnabled=journalPage > 0
     }
-    @objc private func journalChanged() {let i=journalPicker!.indexOfSelectedItem;if store.save.journal.indices.contains(i){note?.stringValue=store.save.journal[i].note}}
-    @objc private func saveNote() {let i=journalPicker!.indexOfSelectedItem;guard store.save.journal.indices.contains(i) else{return};attempt{try store.updateNote(id:store.save.journal[i].id,note:note?.stringValue ?? "")};message.stringValue="批注已保存。"}
-    @objc private func deleteNote() {let i=journalPicker!.indexOfSelectedItem;guard store.save.journal.indices.contains(i) else{return};attempt{try store.deleteEntry(id:store.save.journal[i].id)};render()}
-    private var taskCommand:String {
-        let path=Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/susu").path
-        return "'"+path.replacingOccurrences(of:"'",with:"'\\''")+"' watch -- /usr/bin/true"
+    private func selectedJournalID() -> UUID? { guard let raw=journalPicker?.selectedItem?.representedObject as? String else{return selectedJournalUUID}; return UUID(uuidString:raw) }
+    @objc private func journalChanged() { guard let id=selectedJournalID(), let entry=store.save.journal.first(where:{$0.id==id}) else{return}; selectedJournalUUID=id; note?.stringValue=entry.note }
+    @objc private func previousJournalPage(){journalPage += 1;render()}
+    @objc private func nextJournalPage(){journalPage=max(0,journalPage-1);render()}
+    @objc private func saveNote() {
+        guard let id = selectedJournalID() else { return }
+        if attempt({ try store.updateNote(id: id, note: note?.stringValue ?? "") }) { message.stringValue = "批注已保存。" }
     }
-    @objc private func copyTask() {NSPasteboard.general.clearContents();NSPasteboard.general.setString(taskCommand,forType:.string);message.stringValue="命令已复制。"}
+    @objc private func deleteNote() {
+        guard let id = selectedJournalID(), confirmDestructiveAction("删除这条手帐？", message: "删除后无法恢复。") else { return }
+        if attempt({ try store.deleteEntry(id: id) }) { selectedJournalUUID = nil; render() }
+    }
+    @objc private func copyTask() {
+        guard let command = TaskTool.command else { message.stringValue = TaskTool.unavailable; return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(command, forType: .string)
+        message.stringValue = "命令已复制。"
+    }
     @objc private func exportSave() {
         let dialog=NSSavePanel();dialog.nameFieldStringValue="溯溯存档.json";dialog.allowedContentTypes=[.json]
         guard dialog.runModal() == .OK,let url=dialog.url else{return}
@@ -276,32 +284,31 @@ final class CompanionRoom:NSObject,NSWindowDelegate {
     @objc private func importSave() {
         let dialog=NSOpenPanel();dialog.allowedContentTypes=[.json]
         guard dialog.runModal() == .OK,let url=dialog.url else{return}
-        let confirm=NSAlert();confirm.messageText="用这份存档替换当前记录？";confirm.addButton(withTitle:"导入");confirm.addButton(withTitle:"取消")
-        guard confirm.runModal() == .alertFirstButtonReturn else{return}
+        guard confirmDestructiveAction("用这份存档替换当前记录？", message: "导入会覆盖当前记录。需要保留的话请先导出。", actionLabel: "导入") else { return }
         attempt{try store.importData(Data(contentsOf:url))};render()
     }
-    func refreshTask(_ text:String){taskDetail=text;if window.isVisible && segment.selectedSegment==4{render()}}
+    func refreshTask(_ text:String){taskDetail=text;if selectedTab==4{render()}}
     func runChecks(at directory:URL)throws {
         for hidden in 0..<3 {
             var game=PineconeGame();game.hide(at:hidden);game.phase = .hint;game.reveal(hidden);precondition(game.found)
             game.reveal((hidden+1)%3);precondition(!game.found && game.hidden==hidden)
         }
-        window.orderOut(nil)
-        segment.selectedSegment=0;render()
+        selectedTab=0;render()
         choosePile(1)
         precondition(forest?.game.phase == .sniff)
         gameTimer?.invalidate();forest?.game.phase = .hint
         choosePile(1)
         precondition(forest?.game.found == true)
         let countBefore=store.save.foodCounts.reduce(0,+)
-        for food in 0..<3 { segment.selectedSegment=1;feed(food) }
+        for food in 0..<3 { selectedTab=1;feed(food) }
         precondition(store.save.foodCounts.reduce(0,+)==countBefore+3)
         for tab in 0..<6 {
-            segment.selectedSegment=tab;render()
-            window.contentView?.layoutSubtreeIfNeeded()
-            window.displayIfNeeded()
+            let preview=desktopView(tab:tab)
+            preview.layoutSubtreeIfNeeded()
+            preview.displayIfNeeded()
             RunLoop.current.run(until:Date().addingTimeInterval(0.05))
-            guard let root=window.contentView,let rep=root.bitmapImageRepForCachingDisplay(in:root.bounds) else{fatalError()}
+            let root=preview
+            guard let rep=root.bitmapImageRepForCachingDisplay(in:root.bounds) else{fatalError()}
             root.cacheDisplay(in:root.bounds,to:rep)
             try rep.representation(using:.png,properties:[:])!.write(to:directory.appendingPathComponent("room-\(tab).png"))
         }

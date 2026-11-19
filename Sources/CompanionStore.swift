@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 struct JournalEntry: Codable, Identifiable {
     var id = UUID()
@@ -15,10 +16,12 @@ struct CompanionSave: Codable {
     var recordedKeys: [String] = []
     var activities = CompanionActivities()
     var studio = StudioState()
+    var lastTask: TaskEvent?
+    var plannedTasks: [PlannedTask] = []
 
     init() {}
     enum CodingKeys: String, CodingKey {
-        case version, identity, foodCounts, journal, handledTasks, recordedKeys, activities, studio
+        case version, identity, foodCounts, journal, handledTasks, recordedKeys, activities, studio, lastTask, plannedTasks
     }
     init(from decoder: Decoder) throws {
         let data = try decoder.container(keyedBy:CodingKeys.self)
@@ -34,6 +37,8 @@ struct CompanionSave: Codable {
             activities = try data.decodeIfPresent(CompanionActivities.self,forKey:.activities) ?? CompanionActivities()
         }
         studio = version>=3 ? try data.decode(StudioState.self,forKey:.studio) : StudioState()
+        lastTask = try data.decodeIfPresent(TaskEvent.self,forKey:.lastTask)
+        plannedTasks = try data.decodeIfPresent([PlannedTask].self, forKey: .plannedTasks) ?? []
     }
 }
 struct TaskEvent: Codable {
@@ -43,6 +48,14 @@ struct TaskEvent: Codable {
     let pid: Int32
     var date = Date()
     var exitCode: Int32?
+    var processStartTime: TimeInterval?
+}
+func processStartTime(_ pid: Int32) -> TimeInterval? {
+    guard pid > 0 else { return nil }
+    var info = proc_bsdinfo()
+    let size = Int32(MemoryLayout.size(ofValue: info))
+    guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
+    return TimeInterval(info.pbi_start_tvsec) + TimeInterval(info.pbi_start_tvusec) / 1_000_000
 }
 final class CompanionStore {
     static var defaultDirectory: URL {
@@ -53,6 +66,7 @@ final class CompanionStore {
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
     private var file: URL { directory.appendingPathComponent("save.json") }
+    private(set) var recoveredBackupURL: URL?
 
     init(directory: URL? = nil) throws {
         self.directory = directory ?? Self.defaultDirectory
@@ -60,10 +74,19 @@ final class CompanionStore {
         try FileManager.default.createDirectory(at:self.directory,withIntermediateDirectories:true)
         if FileManager.default.fileExists(atPath:file.path) {
             let original = try Data(contentsOf:file)
-            save = try decoder.decode(CompanionSave.self,from:original)
-            try validate(save)
-            try validateActivities(save.activities)
-            try validateStudio(save.studio)
+            do {
+                save = try decoder.decode(CompanionSave.self,from:original)
+                try validate(save); try validateActivities(save.activities); try validateStudio(save.studio)
+            } catch {
+                if let object = try? JSONSerialization.jsonObject(with: original) as? [String: Any],
+                   let version = object["version"] as? Int, version > 3 {
+                    throw NSError(domain: "SusuSave", code: 5, userInfo: [NSLocalizedDescriptionKey: "这份存档来自更高版本。请用支持该存档的版本打开，原文件已保留。"])
+                }
+                let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of:":", with:"-") + "-" + UUID().uuidString
+                let backup = self.directory.appendingPathComponent("save-recovered-\(stamp).json")
+                try original.write(to: backup, options: .atomic); recoveredBackupURL = backup
+                save = CompanionSave(); try commit(save); return
+            }
             if save.version < 3 {
                 let backup = self.directory.appendingPathComponent(save.version==1 ? "save-2.0-backup.json" : "save-2.1-backup.json")
                 if !FileManager.default.fileExists(atPath:backup.path) { try original.write(to:backup,options:.atomic) }
@@ -75,7 +98,9 @@ final class CompanionStore {
         guard [1,2,3].contains(value.version), value.foodCounts.count == 3,
               value.foodCounts.allSatisfy({ $0 >= 0 && $0 <= 1_000_000 }),
               value.journal.count <= 10000, value.handledTasks.count <= 100000,
-              Set(value.journal.map(\.id)).count == value.journal.count else {
+              Set(value.journal.map(\.id)).count == value.journal.count,
+              value.plannedTasks.count <= 1000, value.plannedTasks.allSatisfy(\.isValid),
+              Set(value.plannedTasks.map(\.id)).count == value.plannedTasks.count else {
             throw NSError(domain:"SusuSave",code:1,userInfo:[NSLocalizedDescriptionKey:"存档格式或数据范围无效，原存档已保留。"])
         }
     }
@@ -146,20 +171,87 @@ final class CompanionStore {
     func exportData()throws->Data {try encoder.encode(save)}
     func importData(_ data:Data)throws {
         guard data.count<=10_000_000 else{throw NSError(domain:"SusuSave",code:2)}
-        let next=try decoder.decode(CompanionSave.self,from:data);try commit(next)
+        let next = try decoder.decode(CompanionSave.self, from: data)
+        try validate(next)
+        try commit(next)
     }
-    func taskEvents()->[TaskEvent] {
-        let folder=directory.appendingPathComponent("tasks")
-        let files=(try? FileManager.default.contentsOfDirectory(at:folder,includingPropertiesForKeys:nil)) ?? []
-        return files.filter{$0.pathExtension=="json"}.compactMap{try? decoder.decode(TaskEvent.self,from:Data(contentsOf:$0))}
+    func taskProcessIsAlive(_ event: TaskEvent) -> Bool {
+        guard event.status == "running", let actual = processStartTime(event.pid) else { return false }
+        if let expected = event.processStartTime { return abs(actual - expected) < 0.000002 }
+        // A PID reused after the recorded start cannot belong to an older watcher.
+        return actual <= event.date.timeIntervalSince1970
     }
-    func handleTask(_ event:TaskEvent)throws {
-        guard ["success","failure","cancelled"].contains(event.status), !save.handledTasks.contains(event.id) else{return}
-        var next=save;next.handledTasks.append(event.id)
-        if !next.recordedKeys.contains("first-task") {
+    private func readTask(_ url: URL) -> (TaskEvent, Data)? {
+        guard let file = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? file.close() }
+        guard let bytes = try? file.read(upToCount: 524_289), bytes.count <= 524_288,
+              let event = try? decoder.decode(TaskEvent.self, from: bytes),
+              event.id == url.deletingPathExtension().lastPathComponent else { return nil }
+        return (event, bytes)
+    }
+
+    /// Recheck a suspected orphan while no watcher can publish a replacement result.
+    private func readStoppedTask(_ url: URL, folder: URL) -> (TaskEvent, Data)? {
+        let fd = open(folder.appendingPathComponent("watch.lock").path, O_CREAT | O_RDWR, 0o600)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+        var lock = Darwin.flock()
+        lock.l_type = Int16(F_WRLCK); lock.l_whence = Int16(SEEK_SET)
+        guard fcntl(fd, F_SETLK, &lock) != -1, let (current, bytes) = readTask(url) else { return nil }
+        if current.status != "running" { return (current, bytes) }
+        guard !taskProcessIsAlive(current) else { return nil }
+        let cancelled = TaskEvent(id: current.id, name: current.name, status: "cancelled", pid: current.pid,
+                                  date: current.date, exitCode: nil, processStartTime: current.processStartTime)
+        return (cancelled, bytes)
+    }
+
+    /// Save the full batch before removing any files. An interrupted cleanup can safely be retried.
+    func pollTaskEvents() throws -> [TaskEvent] {
+        let folder = directory.appendingPathComponent("tasks")
+        guard FileManager.default.fileExists(atPath: folder.path) else { return [] }
+        let files = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.isRegularFileKey], options: .skipsHiddenFiles)
+        var active: [TaskEvent] = []
+        var completed: [(TaskEvent, URL, Data)] = []
+        for url in files where url.pathExtension == "json" && (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
+            guard var (event, bytes) = readTask(url) else { continue }
+            if event.status == "running" {
+                if taskProcessIsAlive(event) { active.append(event); continue }
+                guard let latest = readStoppedTask(url, folder: folder) else { continue }
+                (event, bytes) = latest
+            }
+            if ["success", "failure", "cancelled"].contains(event.status) {
+                completed.append((event, url, bytes))
+            }
+        }
+        let fresh = try recordCompletedTasks(completed.map { $0.0 })
+        for (_, url, bytes) in completed where readTask(url)?.1 == bytes {
+            try? FileManager.default.removeItem(at: url)
+        }
+        return active + fresh
+    }
+
+    @discardableResult private func recordCompletedTasks(_ events: [TaskEvent]) throws -> [TaskEvent] {
+        guard !events.isEmpty else { return [] }
+        func earlier(_ a: TaskEvent, _ b: TaskEvent) -> Bool { a.date == b.date ? a.id < b.id : a.date < b.date }
+        var known = Set(save.handledTasks)
+        let ordered = events.sorted(by: earlier)
+        let fresh = ordered.filter { known.insert($0.id).inserted }
+        var next = save
+        // A pre-2.8 save may have already handled the event but has no last result field.
+        let latest = ordered.last!
+        let advancesLast = next.lastTask.map({ earlier($0, latest) }) ?? true
+        guard !fresh.isEmpty || advancesLast else { return [] }
+        next.handledTasks.append(contentsOf: fresh.map(\.id))
+        if advancesLast { next.lastTask = latest }
+        if let first = fresh.first, !next.recordedKeys.contains("first-task"), next.journal.count < 10_000 {
             next.recordedKeys.append("first-task")
-            next.journal.append(JournalEntry(text:"第一次替你等待任务：\(event.name)。"))
+            next.journal.append(JournalEntry(text:"第一次替你等待任务：\(first.name)。"))
         }
         try commit(next)
+        return fresh
+    }
+    func handleTask(_ event: TaskEvent) throws {
+        guard ["success", "failure", "cancelled"].contains(event.status) else { return }
+        try recordCompletedTasks([event])
     }
 }

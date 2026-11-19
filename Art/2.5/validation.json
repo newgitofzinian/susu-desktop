@@ -1,0 +1,74 @@
+{
+  "spring": {
+    "body_pixels_locked": 16469,
+    "changed_body_pixels": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "walking_frames": 8,
+    "safety_core": {
+      "x": 0.3541666666666667,
+      "y": 0.21634615384615385,
+      "width": 0.14583333333333334,
+      "height": 0.1346153846153846
+    }
+  },
+  "summer": {
+    "body_pixels_locked": 16788,
+    "changed_body_pixels": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "walking_frames": 8,
+    "safety_core": {
+      "x": 0.4010416666666667,
+      "y": 0.20192307692307693,
+      "width": 0.18229166666666666,
+      "height": 0.16826923076923078
+    }
+  },
+  "autumn": {
+    "body_pixels_locked": 17504,
+    "changed_body_pixels": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "walking_frames": 8,
+    "safety_core": {
+      "x": 0.359375,
+      "y": 0.1875,
+      "width": 0.18229166666666666,
+      "height": 0.16826923076923078
+    }
+  },
+  "winter": {
+    "body_pixels_locked": 16290,
+    "changed_body_pixels": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "walking_frames": 8,
+    "safety_core": {
+      "x": 0.3645833333333333,
+      "y": 0.21634615384615385,
+      "width": 0.14583333333333334,
+      "height": 0.1346153846153846
+    }
+  }
+}
